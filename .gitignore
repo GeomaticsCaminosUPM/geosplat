@@ -1,0 +1,26 @@
+# Python / tooling
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.ipynb_checkpoints/
+
+# Outputs of every example (SfM work dirs, trained .ply, renders, GIFs)
+examples/*/output*/
+*.log
+nohup.out
+*.ply
+
+# Inputs that can be downloaded again (keep the download scripts)
+examples/south_building/images/
+examples/seneca/images/
+examples/*/*.zip
+
+# Private drone photos and ground control points
+examples/dron2024/images/
+
+# Your own datasets: uncomment to keep photos out of git
+# examples/*/images/
