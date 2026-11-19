@@ -33,7 +33,11 @@ class GeoConfig:
             estimates it from flight height and camera focal length.
         gcps: Optional CSV of ground control points (``name,x,y,z`` in ``crs``)
             drawn on the orthophoto preview to check the georeferencing.
-            ``None`` uses a ``*.csv`` found in the photo folder, if any.
+            ``None`` uses a GCP file found in the photo folder, if any (vector
+            files with a CRS such as ``.gpkg`` / ``.geojson`` / ``.shp``, or CSV).
+        gcps_crs: CRS of the GCP coordinates (e.g. ``"EPSG:25830"``), needed only
+            for CSV files; ``None`` reads it from vector files or infers it from
+            the photo positions.
         dense_min_opacity: Minimum Gaussian opacity (0-1) for a Gaussian center
             to become a point of ``points_dense.ply``, or ``"auto"`` (default)
             to choose it with Otsu's method on the opacity histogram. Lower =
@@ -47,6 +51,7 @@ class GeoConfig:
     dense_min_opacity: float | str = "auto"
     gsd: float | None = None
     gcps: str | Path | None = None
+    gcps_crs: str | None = None
 
 
 @dataclass
@@ -388,28 +393,194 @@ def read_gcps(path: str | Path) -> dict[str, np.ndarray]:
     return gcps
 
 
-def find_gcp_file(image_dir: str | Path, min_points: int = 3) -> Path | None:
-    """Find a ground-control-point CSV (``name,x,y,z``) next to the photos.
+GCP_VECTOR_EXTENSIONS = (".gpkg", ".geojson", ".json", ".shp", ".gml", ".kml", ".fgb")
+GCP_TEXT_EXTENSIONS = (".csv", ".txt")
+_NAME_FIELDS = ("name", "id", "label", "point", "code", "nombre", "punto", "diana", "target")
+_Z_FIELDS = ("z", "h", "height", "elev", "elevation", "alt", "altitude", "cota", "altura")
 
-    Any ``*.csv`` in ``image_dir`` with at least ``min_points`` numeric rows
-    qualifies. Coordinates are assumed to be in the output CRS (the photos'
-    UTM zone unless another CRS is configured).
+
+def read_gcp_file(path: str | Path) -> tuple[dict[str, np.ndarray], str | None]:
+    """Read ground control points from a CSV or a vector file (GeoPackage, Shapefile, GeoJSON...).
+
+    Vector files: one point per feature; the name comes from a field such as
+    ``name`` / ``id`` / ``label`` (or the feature index) and the height from a 3D
+    geometry or a field such as ``z`` / ``h`` / ``height`` (``nan`` if absent).
+
+    Args:
+        path: GCP file.
+
+    Returns:
+        Tuple ``(points, crs)``: ``{name: [x, y, z]}`` in the file's coordinates
+        and the file's CRS (``None`` for CSV / text files, which carry no CRS).
+    """
+    path = Path(path)
+    if path.suffix.lower() not in GCP_VECTOR_EXTENSIONS:
+        return read_gcps(path), None
+    import pyogrio
+    import shapely
+
+    meta, _, geoms, field_data = pyogrio.raw.read(str(path))
+    fields = {str(n).lower(): np.asarray(v) for n, v in zip(meta["fields"], field_data)}
+    name_col = next((fields[f] for f in _NAME_FIELDS if f in fields), None)
+    z_col = next((fields[f] for f in _Z_FIELDS if f in fields), None)
+    points = {}
+    for i, g in enumerate(shapely.from_wkb(geoms)):
+        if g is None or g.is_empty:
+            continue
+        g = g if g.geom_type == "Point" else g.centroid
+        z = g.z if g.has_z else (float(z_col[i]) if z_col is not None else np.nan)
+        name = str(name_col[i]) if name_col is not None else str(i + 1)
+        points[name] = np.array([g.x, g.y, z], dtype=np.float64)
+    return points, meta.get("crs")
+
+
+def _photo_lonlat(image_dir: str | Path) -> np.ndarray:
+    """GPS positions of the photos in a folder.
+
+    Args:
+        image_dir: Folder with photos.
+
+    Returns:
+        Array ``[N, 2]`` of ``(lon, lat)`` (empty if no photo has GPS).
+    """
+    pos = [g for g in (read_gps(p) for p in list_images(image_dir)) if g is not None]
+    return np.array([[lon, lat] for lat, lon, _ in pos]).reshape(-1, 2)
+
+
+def infer_gcp_crs(points: dict[str, np.ndarray], photo_lonlat: np.ndarray) -> tuple[str | None, float]:
+    """Guess the CRS of GCP coordinates from where the photos were taken.
+
+    Candidates are geographic lon/lat and the UTM zones around the photos (WGS84;
+    also ETRS89 in Europe and NAD83 in North America). The winner places the most
+    GCPs inside the photographed area (convex hull of the photo positions,
+    enlarged by 30 % of its size, at least 50 m).
+
+    Args:
+        points: ``{name: [x, y, z]}`` as read from the file.
+        photo_lonlat: Photo positions ``[N, 2]`` (lon, lat).
+
+    Returns:
+        Tuple ``(crs, fraction_inside)``; ``crs`` is ``None`` if no candidate puts at
+        least half of the points inside the area.
+    """
+    import shapely
+    from pyproj import Transformer
+
+    if len(points) == 0 or len(photo_lonlat) == 0:
+        return None, 0.0
+    xy = np.array([p[:2] for p in points.values()])
+    lon, lat = float(np.median(photo_lonlat[:, 0])), float(np.median(photo_lonlat[:, 1]))
+    zone = int((lon + 180) // 6) + 1
+    north = lat >= 0
+    candidates = ["EPSG:4326"] if np.all(np.abs(xy[:, 0]) <= 180) and np.all(np.abs(xy[:, 1]) <= 90) else []
+    for z in (zone, zone - 1, zone + 1):
+        if not 1 <= z <= 60:
+            continue
+        if north and -32 <= lon <= 45 and lat >= 27 and 28 <= z <= 38:
+            candidates.append(f"EPSG:{25800 + z}")          # ETRS89 / UTM (Europe)
+        candidates.append(f"EPSG:{(32600 if north else 32700) + z}")   # WGS84 / UTM
+        if north and -170 <= lon <= -50 and 1 <= z <= 23:
+            candidates.append(f"EPSG:{26900 + z}")          # NAD83 / UTM (North America)
+    best, best_score = None, 0.0
+    for crs in candidates:
+        if crs == "EPSG:4326":
+            px, py = photo_lonlat[:, 0], photo_lonlat[:, 1]
+            hull = shapely.MultiPoint(np.c_[px, py]).convex_hull
+            size = max(np.ptp(px), np.ptp(py))
+            area = hull.buffer(max(0.3 * size, 50 / 111_320))
+        else:
+            t = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+            px, py = t.transform(photo_lonlat[:, 0], photo_lonlat[:, 1])
+            hull = shapely.MultiPoint(np.c_[px, py]).convex_hull
+            area = hull.buffer(max(0.3 * max(np.ptp(px), np.ptp(py)), 50.0))
+        score = float(np.mean(shapely.contains_xy(area, xy[:, 0], xy[:, 1])))
+        if score > best_score:  # ties keep the earlier (preferred) candidate
+            best, best_score = crs, score
+    return (best, best_score) if best_score >= 0.5 else (None, best_score)
+
+
+def find_gcp_file(image_dir: str | Path, min_points: int = 3) -> Path | None:
+    """Find a ground-control-point file next to the photos.
+
+    Vector files with a CRS (``.gpkg``, ``.geojson``, ``.shp``...) are preferred
+    over CSV / text files (``name,x,y,z``, header optional).
 
     Args:
         image_dir: Folder with the photos.
         min_points: Minimum number of valid points.
 
     Returns:
-        Path of the first matching CSV, or ``None``.
+        Path of the first matching file, or ``None``.
     """
     image_dir = Path(image_dir)
     if not image_dir.is_dir():
         return None
-    for csv_path in sorted(image_dir.glob("*.csv")):
+    files = sorted(p for p in image_dir.iterdir() if p.suffix.lower() in GCP_VECTOR_EXTENSIONS)
+    files += sorted(p for p in image_dir.iterdir() if p.suffix.lower() in GCP_TEXT_EXTENSIONS)
+    for path in files:
         try:
-            if len(read_gcps(csv_path)) >= min_points:
-                logger.info("Ground control points found: %s", csv_path.name)
-                return csv_path
-        except (OSError, UnicodeDecodeError):
+            if len(read_gcp_file(path)[0]) >= min_points:
+                logger.info("Ground control points found: %s", path.name)
+                return path
+        except Exception:  # noqa: BLE001 - unreadable / unrelated file
             continue
     return None
+
+
+def gcp_setup(image_dir: str | Path, config: GeoConfig) -> tuple[Path | None, str | None]:
+    """Find the GCP file and its CRS, before georeferencing.
+
+    The CRS is, in order: ``config.gcps_crs``, the file's own CRS (vector files),
+    or a guess from the photo positions (:func:`infer_gcp_crs`). If no output CRS
+    is configured and the GCP CRS is projected, it becomes the output CRS, so all
+    products are delivered in the survey's coordinate system.
+
+    Args:
+        image_dir: Folder with the photos.
+        config: Georeferencing options; ``config.crs`` may be filled in.
+
+    Returns:
+        Tuple ``(gcp_file, gcp_crs)`` (``None`` values when there is no GCP file
+        or the CRS could not be determined).
+    """
+    from pyproj import CRS
+
+    path = Path(config.gcps) if config.gcps else find_gcp_file(image_dir)
+    if path is None:
+        return None, None
+    points, file_crs = read_gcp_file(path)
+    crs = config.gcps_crs or file_crs
+    if crs is None:
+        crs, score = infer_gcp_crs(points, _photo_lonlat(image_dir))
+        if crs:
+            logger.info("GCP CRS inferred as %s (%.0f %% of points inside the photographed area)", crs, 100 * score)
+        else:
+            logger.warning("Could not infer the CRS of %s; set it explicitly (gcps_crs / GCPS_CRS).", path.name)
+    if crs and config.crs is None and CRS.from_user_input(crs).is_projected:
+        config.crs = CRS.from_user_input(crs).to_string()
+    return path, crs
+
+
+def load_gcps(path: str | Path, target_crs: str | None, gcp_crs: str | None = None) -> dict[str, np.ndarray]:
+    """Read a GCP file and convert its coordinates to the output CRS.
+
+    Args:
+        path: GCP file (CSV or vector).
+        target_crs: CRS of the georeference (``geo.crs``).
+        gcp_crs: CRS of the file's coordinates (from :func:`gcp_setup`); ``None``
+            assumes they are already in ``target_crs``.
+
+    Returns:
+        ``{name: [x, y, z]}`` in ``target_crs`` (heights unchanged; ``nan`` if unknown).
+    """
+    from pyproj import CRS, Transformer
+
+    points, file_crs = read_gcp_file(path)
+    src = gcp_crs or file_crs
+    if not points or src is None or target_crs is None or CRS.from_user_input(src) == CRS.from_user_input(target_crs):
+        return points
+    t = Transformer.from_crs(src, target_crs, always_xy=True)
+    names = list(points)
+    xyz = np.array([points[n] for n in names])
+    x, y = t.transform(xyz[:, 0], xyz[:, 1])
+    return {n: np.array([x[i], y[i], xyz[i, 2]]) for i, n in enumerate(names)}

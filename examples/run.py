@@ -1,6 +1,6 @@
 """Run geosplat on any photo folder: fast orthophoto, point clouds, Gaussian splat, true orthophoto.
 
-``SOURCE`` is the name of a folder in ``examples/`` (``dron2024``), any folder
+``SOURCE`` is the name of a folder in ``examples/`` (``drone2024``), any folder
 (``/data/flight1`` or ``/data/flight1/images``) or a zip of photos
 (``/data/flight1.zip``, extracted automatically next to it). Photos are read from
 ``<dataset>/images/`` if it exists, otherwise from the folder itself. Results go
@@ -18,8 +18,8 @@ Priority: command line > config file > preset > defaults.
 Examples::
 
     uv run python examples/run.py seneca --preset fast              # public sample, downloaded on first use
-    uv run python examples/run.py dron2024                          # medium preset
-    uv run python examples/run.py dron2024 --preset very_fast
+    uv run python examples/run.py drone2024                          # medium preset
+    uv run python examples/run.py drone2024 --preset very_fast
     uv run python examples/run.py /data/flight1 --preset fast --max-images 80 --polygon aoi.gpkg
     uv run python examples/run.py my_scene --preset quality --crs EPSG:25830 -o /data/results
 """

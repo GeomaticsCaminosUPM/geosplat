@@ -17,9 +17,9 @@ NOTEBOOK = ROOT / "examples" / "run.ipynb"
 OUT_DIR = Path(__file__).resolve().parent / "notebooks"
 
 DATASETS = {
-    # name: (IMAGES_DIR relative to the repo root, SAMPLE value, needs local photos)
-    "seneca": ("examples/seneca/images", '"seneca"', False),
-    "dron2024": ("examples/dron2024/images", "None", True),
+    # name: (IMAGES_DIR value written into the notebook, needs local photos)
+    "seneca": ("seneca", False),
+    "drone2024": ("examples/drone2024/images", True),
 }
 
 
@@ -32,15 +32,14 @@ def make_test_notebook(name: str) -> Path:
     Returns:
         Path of the generated notebook in ``tests/notebooks/``.
     """
-    images, sample, _ = DATASETS[name]
+    images, _ = DATASETS[name]
     nb = json.loads(NOTEBOOK.read_text())
     for cell in nb["cells"]:
         if cell["cell_type"] != "code":
             continue
         src = cell["source"] if isinstance(cell["source"], str) else "".join(cell["source"])
         src = src.replace('PRESET = "fast"', 'PRESET = "very_fast"')
-        src = src.replace('IMAGES_DIR = Path("examples/seneca/images")', f'IMAGES_DIR = Path("{images}")')
-        src = src.replace('SAMPLE = "seneca"', f"SAMPLE = {sample}")
+        src = src.replace('IMAGES_DIR = "seneca"', f'IMAGES_DIR = "{images}"')
         cell["source"] = src
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     path = OUT_DIR / f"run_{name}_very_fast.ipynb"
@@ -58,7 +57,7 @@ def test_notebook_very_fast(name: str) -> None:
     """
     nbformat = pytest.importorskip("nbformat")
     nbclient = pytest.importorskip("nbclient")
-    images, _, needs_local = DATASETS[name]
+    images, needs_local = DATASETS[name]
     if needs_local and not (ROOT / images).is_dir():
         pytest.skip(f"{images} not present")
     path = make_test_notebook(name)

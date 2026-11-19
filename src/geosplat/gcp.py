@@ -237,6 +237,8 @@ def refine_georeference(
         heights[heights == nodata] = np.median(valid) if len(valid) else 0.0
     src = np.stack([east, north, heights], 1) - geo.origin   # where the targets are now (local)
     dst = np.stack([gcps[n] for n in names]) - geo.origin   # where they should be (local)
+    no_z = ~np.isfinite(dst[:, 2])
+    dst[no_z, 2] = src[no_z, 2]                              # GCPs without height: keep the current height
 
     if len(names) >= 3:
         C, method = umeyama(src, dst), "similarity (7 parameters)"

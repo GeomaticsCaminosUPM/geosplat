@@ -10,7 +10,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .geo import GeoConfig, GeoReference, find_gcp_file, georeference, gravity_in_scene, local_georeference
+from .geo import GeoConfig, GeoReference, gcp_setup, georeference, gravity_in_scene, load_gcps, local_georeference
 from .scene import Scene, is_colmap_project, load_colmap_scene, normalize_scene
 from .sfm import SfMConfig, run_sfm
 from .trainer import TrainConfig, Trainer, TrainResult
@@ -148,15 +148,15 @@ def images_to_splat(
         colmap_dir, originals = run_sfm(image_dir, output_dir / "colmap", sfm_config), image_dir
     timings["sfm"] = time.time() - t
 
+    # GCP file and CRS first: a projected GCP CRS becomes the output CRS if none is set.
+    gcp_file, gcp_crs = gcp_setup(originals, geo_config) if originals is not None and geo_config.enabled else (None, None)
     scene, geo = prepare_scene(colmap_dir, originals, geo_config)
     outputs: dict[str, Path] = {}
     if geo is not None:
         geo.save(output_dir / "geo.json")
     # Without GPS, orthophotos are still made in a local Z-up frame (no CRS, SfM units).
     ortho_frame = geo if geo is not None else local_georeference(scene)
-    gcps = None
-    if geo is not None:
-        gcps = geo_config.gcps or (find_gcp_file(originals) if originals is not None else None)
+    gcps = load_gcps(gcp_file, geo.crs, gcp_crs) if geo is not None and gcp_file is not None else None
     if geo_config.fast_orto:
         from .ortho import make_fast_orthophoto
 

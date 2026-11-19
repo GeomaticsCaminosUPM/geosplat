@@ -65,7 +65,10 @@ def add_options(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     geo = p.add_argument_group("georeferencing / orthophoto")
     geo.add_argument("--crs", default=None, help="Output CRS, e.g. EPSG:25830 (default: UTM zone from photo GPS).")
     geo.add_argument("--gsd", type=float, default=None, help="Orthophoto pixel size (default: native).")
-    geo.add_argument("--gcps", default=None, help="CSV name,x,y,z in the output CRS (default: a CSV next to the photos).")
+    geo.add_argument("--gcps", default=None,
+                     help="GCP file: .gpkg/.shp/.geojson (with CRS) or CSV name,x,y,z (default: one next to the photos).")
+    geo.add_argument("--gcps-crs", default=None,
+                     help="CRS of a CSV GCP file, e.g. EPSG:25830 (default: inferred from the photo positions).")
     geo.add_argument("--dense-min-opacity", default=None,
                      type=lambda v: v if v == "auto" else float(v),
                      help="Min Gaussian opacity (0-1) for points_dense.ply, or 'auto' (default, Otsu).")
@@ -108,7 +111,7 @@ def configs_from_args(
         background_points=0 if a.no_background_sphere else None,
     )
     cli_geo = dict(
-        enabled=off(a.no_geo), crs=a.crs, ortho=off(a.no_ortho), fast_orto=off(a.no_fast_orto), gsd=a.gsd, gcps=a.gcps,
+        enabled=off(a.no_geo), crs=a.crs, ortho=off(a.no_ortho), fast_orto=off(a.no_fast_orto), gsd=a.gsd, gcps=a.gcps, gcps_crs=a.gcps_crs,
         dense_min_opacity=a.dense_min_opacity,
     )
 

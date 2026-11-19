@@ -103,7 +103,7 @@ CRS.
 
 ## Speed presets
 
-One option sets the speed/quality trade-off. Times are measured on the `dron2024` example (40 drone photos,
+One option sets the speed/quality trade-off. Times are measured on the `drone2024` example (40 drone photos,
 4000×3000) with an RTX 4060 Laptop GPU:
 
 | Preset | Total time | COLMAP | Training | Settings |
@@ -120,7 +120,7 @@ dataset, `fast` for previews, `medium` for good results and `quality` for final 
 
 ```bash
 uv run geosplat path/to/images -o path/to/output --preset medium
-uv run python examples/run.py dron2024 --preset medium
+uv run python examples/run.py drone2024 --preset medium
 ```
 
 ### Choosing a preset
@@ -129,7 +129,7 @@ uv run python examples/run.py dron2024 --preset medium
 uv run geosplat path/to/images -o out_very_fast --preset very_fast
 uv run geosplat path/to/images -o out_fast      --preset fast
 uv run geosplat path/to/images -o out_quality   --preset quality
-uv run python examples/run.py dron2024 --preset fast                    # writes examples/dron2024/output_fast/
+uv run python examples/run.py drone2024 --preset fast                    # writes examples/drone2024/output_fast/
 ```
 
 ```python
@@ -189,14 +189,14 @@ examples/
 ├── south_building/          # hand-held photos, no GPS (downloadable)
 │   ├── download.py
 │   └── images/
-└── dron2024/                # private drone flight, GPS + ground control points (not in git)
+└── drone2024/                # private drone flight, GPS + ground control points (not in git)
     └── images/              # photos + targets.csv (GCPs: name,x,y,z with header, detected automatically)
 ```
 
 ```bash
 uv run python examples/run.py seneca --preset fast                  # downloads 40 GPS drone photos (~90 MB) on first use
 uv run python examples/run.py south_building --preset fast          # downloads 40 photos (~420 MB archive) on first use
-uv run python examples/run.py dron2024 --preset medium
+uv run python examples/run.py drone2024 --preset medium
 ```
 
 **Script** (`examples/run.py`): give it an example name or any folder of photos. It accepts every option of the
@@ -272,8 +272,18 @@ Open `fast_orto/fast_orto.tif`, `ortho/orthophoto.tif` and `ortho/dsm.tif` in QG
 **Layer Properties ▸ Symbology ▸ Singleband pseudocolor**, or **Raster ▸ Analysis ▸ Hillshade**. Overlay your GCPs
 or a reference orthophoto (e.g. PNOA WMS in Spain) to check the georeferencing.
 
-Ground control points: put a `name,x,y,z` CSV (in the output CRS) next to the photos. It is detected
-automatically and used for the red marks and `gcp_check.json`. Accuracy: georeferencing uses only the drone's EXIF GPS, so expect meter-level absolute error horizontally, and
+Ground control points: put a GCP file next to the photos and it is detected automatically:
+
+- **`.gpkg`, `.geojson`, `.shp`** (or other vector formats): points with a CRS. The name comes from a `name` / `id` /
+  `label` field and the height from a 3D geometry or a `z` / `h` / `height` field.
+- **CSV / text:** one point per line, `name,x,y,z` (header optional, `,` `;` tab or space separated). A CSV has no
+  CRS: set it with `--gcps-crs EPSG:25830` (CLI / `run.py`) or `GCPS_CRS` (notebook), or let geosplat infer it. It
+  tries lon/lat and the UTM zones around the photos (WGS84, ETRS89, NAD83) and keeps the one that puts most points
+  inside the photographed area.
+
+If you don't set an output CRS (`--crs`), a projected GCP CRS is used for all outputs, so everything matches your
+survey. The GCPs are drawn on the previews, compared with the DSM (`gcp_check.json`) and used for the GCP refit in
+the notebook. Accuracy: georeferencing uses only the drone's EXIF GPS, so expect meter-level absolute error horizontally, and
 sometimes several meters vertically, because consumer drone altitude is barometric. The internal geometry is much
 better than that. `gcp_check.json` reports DSM height minus GCP height, and the preview marks the GCP positions.
 
@@ -297,7 +307,7 @@ uv run pytest --run-slow      # + end-to-end tests with the very_fast preset (~2
 ```
 
 The slow tests run `examples/run.ipynb` (copies generated in `tests/notebooks/`) on the Seneca sample (and on
-`dron2024` if present), and run `examples/run.py` on `dron2024` and `south_building` when their photos are present.
+`drone2024` if present), and run `examples/run.py` on `drone2024` and `south_building` when their photos are present.
 
 ## Package layout
 

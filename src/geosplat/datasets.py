@@ -179,3 +179,37 @@ def resolve_image_source(path: str | Path) -> Path:
     elif path.with_suffix(".zip").is_file():  # "flight" given, "flight.zip" exists
         return unzip_images(path.with_suffix(".zip"), path)
     return path
+
+
+SAMPLES = {"seneca": download_seneca, "south_building": download_south_building}
+
+
+def prepare_images(source: str | Path, examples_dir: str | Path = "examples", num_images: int = 40) -> Path:
+    """Turn a notebook/CLI photo source into a folder of photos.
+
+    ``source`` may be a folder of photos, a dataset folder with ``images/``, a
+    ``.zip`` of photos (extracted next to it), or the name of a public sample
+    (``"seneca"``: drone flight with GPS; ``"south_building"``: hand-held photos),
+    which is downloaded into ``<examples_dir>/<name>/images`` on first use.
+
+    Args:
+        source: Path or sample name.
+        examples_dir: Folder for downloaded samples.
+        num_images: Number of sample photos to download.
+
+    Returns:
+        Folder containing the photos.
+
+    Raises:
+        FileNotFoundError: If ``source`` is neither an existing path nor a sample name.
+    """
+    text = str(source).strip()
+    path = Path(text).expanduser()
+    if not path.exists() and not path.with_suffix(".zip").exists():
+        if text in SAMPLES:
+            images = Path(examples_dir) / text / "images"
+            SAMPLES[text](images, num_images=num_images)   # skipped if already downloaded
+            return images
+        raise FileNotFoundError(
+            f"{text!r} is not an existing folder or .zip, nor a sample ({', '.join(SAMPLES)})")
+    return resolve_image_source(path)

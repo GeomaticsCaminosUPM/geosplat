@@ -24,7 +24,7 @@ import torch
 import torch.nn.functional as F
 from PIL import Image, ImageDraw
 
-from .geo import GeoReference, read_gcps
+from .geo import GeoReference, read_gcp_file
 from .render import render
 from .scene import Camera, Scene
 
@@ -383,7 +383,7 @@ def make_fast_orthophoto(
     geo: GeoReference,
     output_dir: str | Path,
     gsd: float | None = None,
-    gcps: str | Path | None = None,
+    gcps: str | Path | dict[str, np.ndarray] | None = None,
     device: torch.device | str | None = None,
 ) -> dict[str, object]:
     """Fast orthophoto straight from SfM (no splat training needed).
@@ -398,7 +398,8 @@ def make_fast_orthophoto(
         geo: Georeference of the scene.
         output_dir: Folder for ``fast_orto.tif``, ``dsm_sparse.tif`` and a preview.
         gsd: Pixel size in meters (``None``: native photo resolution).
-        gcps: Optional ``name,x,y,z`` CSV to draw on the preview.
+        gcps: Optional GCPs to draw on the preview: ``{name: [x, y, z]}`` in the
+            orthophoto CRS (see :func:`geosplat.geo.load_gcps`) or a file in that CRS.
         device: Torch device (default: CUDA if available).
 
     Returns:
@@ -419,7 +420,7 @@ def make_fast_orthophoto(
     results["fast_orto"] = write_geotiff(out / "fast_orto.tif", rgba, geo, grid)
     dsm = (elev + float(geo.origin[2])).cpu().numpy().astype(np.float32)
     results["dsm_sparse"] = write_geotiff(out / "dsm_sparse.tif", dsm, geo, grid, nodata=-9999.0)
-    results["fast_orto_preview"] = _preview(rgba[..., :3], grid, geo, read_gcps(gcps) if gcps else {},
+    results["fast_orto_preview"] = _preview(rgba[..., :3], grid, geo, _gcp_points(gcps),
                                             out / "fast_orto_preview.jpg")
     return results
 
@@ -459,6 +460,23 @@ def write_geotiff(
     return path
 
 
+def _gcp_points(gcps: str | Path | dict[str, np.ndarray] | None) -> dict[str, np.ndarray]:
+    """Normalize the ``gcps`` argument of the orthophoto functions.
+
+    Args:
+        gcps: ``{name: [x, y, z]}`` already in the orthophoto CRS, a GCP file
+            (assumed to be in that CRS), or ``None``.
+
+    Returns:
+        GCP dictionary (possibly empty).
+    """
+    if gcps is None:
+        return {}
+    if isinstance(gcps, dict):
+        return gcps
+    return read_gcp_file(gcps)[0]
+
+
 def _preview(
     rgb: np.ndarray, grid: OrthoGrid, geo: GeoReference, gcps: dict[str, np.ndarray], path: Path,
     max_size: int = 2000,
@@ -496,7 +514,7 @@ def make_orthophoto(
     output_dir: str | Path,
     sh_degree: int,
     gsd: float | None = None,
-    gcps: str | Path | None = None,
+    gcps: str | Path | dict[str, np.ndarray] | None = None,
     from_photos: bool = True,
 ) -> dict[str, object]:
     """Produce GeoTIFF orthophotos and DSM for a georeferenced splat.
@@ -508,7 +526,8 @@ def make_orthophoto(
         output_dir: Folder for the outputs.
         sh_degree: SH degree of the model.
         gsd: Pixel size in meters (``None``: native photo resolution).
-        gcps: Optional ``name,x,y,z`` CSV (same CRS) to mark on the previews and
+        gcps: Optional GCPs (``{name: [x, y, z]}`` in the orthophoto CRS, or a file
+            in that CRS) to mark on the previews and
             to compare against the DSM.
         from_photos: Also orthorectify the original photos.
 
@@ -533,7 +552,7 @@ def make_orthophoto(
     dsm = torch.where(valid, elev + float(geo.origin[2]), torch.full_like(elev, -9999.0)).cpu().numpy()
     results["dsm"] = write_geotiff(out / "dsm.tif", dsm.astype(np.float32), geo, grid, nodata=-9999.0)
 
-    gcp_pts = read_gcps(gcps) if gcps else {}
+    gcp_pts = _gcp_points(gcps)
     preview_src = rgba[..., :3]
     if from_photos:
         everywhere = torch.ones_like(valid)
@@ -550,7 +569,8 @@ def make_orthophoto(
             col = int((xyz[0] - geo.origin[0] - grid.left) / grid.gsd)
             row = int((grid.top - (xyz[1] - geo.origin[1])) / grid.gsd)
             if 0 <= row < grid.height and 0 <= col < grid.width and dsm[row, col] != -9999.0:
-                diffs[name] = float(dsm[row, col] - xyz[2])
+                if np.isfinite(xyz[2]):
+                    diffs[name] = float(dsm[row, col] - xyz[2])
         results["gcp_dz"] = diffs
         logger.info("DSM minus GCP height (m): %s", {k: round(v, 2) for k, v in diffs.items()})
     return results

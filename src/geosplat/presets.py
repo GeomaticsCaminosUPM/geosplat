@@ -6,7 +6,7 @@ any explicit override wins over the preset.
 Measured on 40 drone photos (4000x3000) with an RTX 4060 Laptop GPU:
 
 =========  =================  ====================================================
-preset     time (dron2024)    what it does
+preset     time (drone2024)    what it does
 =========  =================  ====================================================
 very_fast  ~1 min             800 px images, 1k steps, <=150k Gaussians, SH degree 1
 fast       ~2 min             1200 px images, 3k steps, <=500k Gaussians, early stop
