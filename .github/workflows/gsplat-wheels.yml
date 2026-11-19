@@ -12,11 +12,11 @@ on:
       python:
         description: "Python version(s), comma separated (e.g. 3.12,3.13)"
         required: true
-        default: "3.12"
+        default: "3.13"           # Google Colab, Nov 2026
       torch:
-        description: "torch version(s), comma separated, without +cuXXX (e.g. 2.8.0)"
+        description: "torch version(s), comma separated, without +cuXXX (e.g. 2.14.1)"
         required: true
-        default: "2.8.0"
+        default: "2.14.1"         # Google Colab, Nov 2026
       cuda:
         description: "CUDA version of that torch build (torch.version.cuda, e.g. 12.6)"
         required: true

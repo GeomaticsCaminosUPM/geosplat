@@ -53,7 +53,7 @@ takes seconds instead of the 3–5 min compile. Wheels are built by the **gsplat
    comma-separated) and run. A build takes about 15–30 min on GitHub's free runners.
 3. The next Colab session installs the wheel automatically. Re-run the workflow when Colab upgrades torch.
 
-Without a matching wheel the CUDA code is compiled once and cached in Google Drive (`MyDrive/geosplat_cache/`).
+Without a matching wheel the CUDA code is compiled once per Colab session (3–5 min).
 
 ## Quick start
 
