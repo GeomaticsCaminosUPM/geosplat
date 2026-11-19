@@ -104,6 +104,7 @@ jobs:
           tag_name: ${{ steps.tag.outputs.tag }}
           name: ${{ steps.tag.outputs.tag }}
           files: dist/*.whl
+          make_latest: false        # keep the package release (e.g. v1.0.0) as "Latest"
           body: |
             Prebuilt gsplat ${{ inputs.gsplat }} for Python ${{ matrix.python }}, torch ${{ matrix.torch }}, CUDA ${{ inputs.cuda }}
             (GPU archs ${{ inputs.arch_list }}). Used automatically by examples/run.ipynb on Google Colab.

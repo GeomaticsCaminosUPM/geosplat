@@ -48,7 +48,7 @@ takes seconds instead of the 3–5 min compile. Wheels are built by the **gsplat
 (`.github/workflows/gsplat-wheels.yml`) for a given Python / torch / CUDA combination:
 
 1. Open the notebook in Colab. If no wheel matches, the setup cell prints the versions to use, e.g.
-   `python=3.12, torch=2.8.0, cuda=12.6`.
+   `python=3.13, torch=2.8.0, cuda=12.6, gsplat=1.5.3`.
 2. On GitHub: **Actions ▸ gsplat wheels ▸ Run workflow**, enter those versions (several can be given,
    comma-separated) and run. A build takes about 15–30 min on GitHub's free runners.
 3. The next Colab session installs the wheel automatically. Re-run the workflow when Colab upgrades torch.
