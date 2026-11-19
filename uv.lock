@@ -1230,6 +1230,8 @@ dev = [
     { name = "jupyterlab" },
     { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "matplotlib", version = "3.11.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "nbclient" },
+    { name = "nbformat" },
     { name = "pytest" },
 ]
 
@@ -1260,6 +1262,8 @@ dev = [
     { name = "ipyleaflet" },
     { name = "jupyterlab" },
     { name = "matplotlib" },
+    { name = "nbclient" },
+    { name = "nbformat" },
     { name = "pytest" },
 ]
 

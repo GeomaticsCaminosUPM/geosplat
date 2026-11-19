@@ -81,6 +81,33 @@ def label_icon(text: str, color: str = "#ff3333", symbol: str = "") -> object:
     return DivIcon(html=sym + lab, icon_size=[0, 0], icon_anchor=[0, 0], class_name="geosplat-label")
 
 
+def opacity_sliders(m: object, overlay: object | None = None) -> object:
+    """Opacity sliders for the basemap (all base layers) and, optionally, an overlay.
+
+    The sliders are linked in the browser (no kernel round trip).
+
+    Args:
+        m: ``ipyleaflet.Map``.
+        overlay: Optional layer (e.g. the orthophoto) with its own slider.
+
+    Returns:
+        An ``ipywidgets.HBox`` with the sliders.
+    """
+    import ipywidgets as widgets
+
+    sliders = []
+    if overlay is not None:
+        ov = widgets.FloatSlider(value=overlay.opacity, min=0, max=1, step=0.05, description="orthophoto")
+        widgets.jslink((ov, "value"), (overlay, "opacity"))
+        sliders.append(ov)
+    base = widgets.FloatSlider(value=1.0, min=0, max=1, step=0.05, description="basemap")
+    for layer in m.layers:
+        if getattr(layer, "base", False):
+            widgets.jslink((base, "value"), (layer, "opacity"))
+    sliders.append(base)
+    return widgets.HBox(sliders)
+
+
 def photo_locations(image_dir: str | Path) -> list[tuple[Path, float, float]]:
     """GPS positions of the photos in a folder.
 
@@ -172,27 +199,45 @@ def photo_icon(kind: str, yaw: float, color: str = "#ff2fb3", size: int = 14) ->
 
 
 class PhotoSelector:
-    """Map of photo positions where the user draws a polygon to select photos.
+    """Map of photo positions to choose which photos to process.
 
-    Photos are pink markers: a square for near-nadir photos, a camera symbol
-    (circle + view cone toward the viewing direction) for oblique ones, a circle
-    without orientation metadata. Draw polygons or rectangles with the toolbar (several shapes are
-    merged); photos inside turn green. Use :meth:`save` to write the area as GeoJSON and
-    pass it as ``SfMConfig(polygon=...)``.
+    All photos start included. Tools (combine them freely):
+
+    * **Mode** (Include / Exclude) + draw a polygon or rectangle: photos inside
+      are included or excluded. The shape is removed once applied.
+    * **Click a photo** to toggle it.
+    * **Include all / Exclude all / Invert** buttons.
+
+    Included photos are pink, excluded ones grey. Marker shape shows the viewing
+    direction from metadata: square = near nadir, camera symbol = oblique,
+    circle = unknown. Use :attr:`selected` or :meth:`save`, or pass
+    ``SfMConfig(image_list=[p.name for p in selector.selected])``.
 
     Args:
         image_dir: Folder with GPS-tagged photos.
         basemap: Basemap name (see :data:`BASEMAPS`).
         height: Map height (CSS).
+        selection_file: Optional text file (one name per line) to load a previous
+            selection from (if it exists) and save to on every change.
     """
 
-    def __init__(self, image_dir: str | Path, basemap: str = "google_hybrid", height: str = "520px") -> None:
+    INCLUDED = "#ff2fb3"
+    EXCLUDED = "#9a9a9a"
+
+    def __init__(
+        self,
+        image_dir: str | Path,
+        basemap: str = "google_hybrid",
+        height: str = "520px",
+        selection_file: str | Path | None = None,
+    ) -> None:
         """Build the map widget.
 
         Args:
             image_dir: Folder with GPS-tagged photos.
             basemap: Basemap name.
             height: Map height (CSS).
+            selection_file: Optional selection file to load/save.
 
         Raises:
             ValueError: If no photo has GPS.
@@ -203,97 +248,135 @@ class PhotoSelector:
         self.photos = photo_locations(image_dir)
         if not self.photos:
             raise ValueError("No GPS-tagged photos to show.")
+        self.selection_file = Path(selection_file) if selection_file else None
+        self.included = np.ones(len(self.photos), dtype=bool)
+        if self.selection_file and self.selection_file.exists():
+            names = set(self.selection_file.read_text().split())
+            self.included = np.array([p.name in names for p, _, _ in self.photos])
+
         lats = np.array([p[1] for p in self.photos])
         lons = np.array([p[2] for p in self.photos])
         self.map = Map(center=(float(lats.mean()), float(lons.mean())), zoom=17, basemap=_basemap(basemap),
                        scroll_wheel_zoom=True, layout=widgets.Layout(height=height))
         self.map.add(ScaleControl(position="bottomleft"))
         _add_other_google_layers(self.map, basemap)
+
         self.kinds = [photo_kind(p) for p, _, _ in self.photos]
-        self.markers = [
-            Marker(location=(float(la), float(lo)), icon=photo_icon(kind, yaw), draggable=False, title=p.name)
-            for (p, la, lo), (kind, yaw) in zip(self.photos, self.kinds)
-        ]
-        self.map.add(LayerGroup(layers=self.markers))
+        self.markers = []
+        for i, ((p, la, lo), (kind, yaw)) in enumerate(zip(self.photos, self.kinds)):
+            m = Marker(location=(float(la), float(lo)), icon=photo_icon(kind, yaw), draggable=False, title=p.name)
+            m.on_click(lambda i=i, **_: self._toggle(i))
+            self.markers.append(m)
+        self.map.add(LayerGroup(layers=self.markers, name="photos"))
         self.map.fit_bounds([[float(lats.min()), float(lons.min())], [float(lats.max()), float(lons.max())]])
+
         style = {"shapeOptions": {"color": "#ffcc00", "fillOpacity": 0.15}}
         self.draw = DrawControl(polygon=style, rectangle=style, polyline={}, circlemarker={}, circle={},
-                                marker={}, edit=True, remove=True)
+                                marker={}, edit=False, remove=False)
         self.draw.on_draw(self._on_draw)
         self.map.add(self.draw)
+
+        self.mode = widgets.ToggleButtons(options=["Include", "Exclude"], value="Exclude",
+                                          tooltips=["Shapes include photos", "Shapes exclude photos"],
+                                          description="Shapes:", style={"button_width": "80px"})
+        buttons = []
+        for text, action in (("Include all", lambda: self._set(np.ones_like(self.included))),
+                             ("Exclude all", lambda: self._set(np.zeros_like(self.included))),
+                             ("Invert", lambda: self._set(~self.included))):
+            btn = widgets.Button(description=text, layout=widgets.Layout(width="110px"))
+            btn.on_click(lambda _b, action=action: action())
+            buttons.append(btn)
         self.label = widgets.HTML()
-        self.polygon = None
+        help_text = widgets.HTML(
+            "Draw a polygon/rectangle (toolbar, left) to <b>include</b> or <b>exclude</b> the photos inside "
+            "(choose the mode); click a photo to toggle it. Pink = included, grey = excluded.")
+        self.widget = widgets.VBox([help_text, widgets.HBox([self.mode, *buttons]), self.map,
+                                    widgets.HBox([self.label, opacity_sliders(self.map)])])
         self._update()
-        self.widget = widgets.VBox([self.map, self.label])
 
     def _on_draw(self, target: object, action: str, geo_json: dict) -> None:
-        """Recompute the selection whenever shapes are drawn, edited or deleted.
+        """Apply a newly drawn shape (include or exclude the photos inside), then remove it.
 
         Args:
             target: The draw control.
-            action: ``"created"``, ``"edited"`` or ``"deleted"``.
-            geo_json: The affected feature.
+            action: ``"created"`` (other actions are ignored).
+            geo_json: The drawn feature.
         """
         import shapely
         from shapely.geometry import shape
 
-        shapes = [shape(f["geometry"]) for f in self.draw.data if f.get("geometry")]
-        self.polygon = shapely.union_all(shapes) if shapes else None
+        if action != "created" or not geo_json.get("geometry"):
+            return
+        geom = shape(geo_json["geometry"])
+        lons = np.array([p[2] for p in self.photos])
+        lats = np.array([p[1] for p in self.photos])
+        inside = shapely.contains_xy(geom, lons, lats)
+        new = self.included.copy()
+        new[inside] = self.mode.value == "Include"
+        self.draw.clear()
+        self._set(new)
+
+    def _toggle(self, i: int) -> None:
+        """Toggle one photo.
+
+        Args:
+            i: Photo index.
+        """
+        new = self.included.copy()
+        new[i] = not new[i]
+        self._set(new)
+
+    def _set(self, included: np.ndarray) -> None:
+        """Replace the selection and refresh the map.
+
+        Args:
+            included: Boolean mask ``[num_photos]``.
+        """
+        self.included = np.asarray(included, dtype=bool)
         self._update()
 
     def _update(self) -> None:
-        """Recolor markers and refresh the selection count."""
-        inside = self.inside_mask()
-        for m, (kind, yaw), ok in zip(self.markers, self.kinds, inside):
-            color = "#2ecc40" if ok and self.polygon is not None else "#ff2fb3"
+        """Recolor markers, refresh the count and persist the selection."""
+        for m, (kind, yaw), ok in zip(self.markers, self.kinds, self.included):
+            color = self.INCLUDED if ok else self.EXCLUDED
             if getattr(m, "_color", None) != color:
                 m.icon = photo_icon(kind, yaw, color)
                 m._color = color
-        n = int(inside.sum())
-        msg = "all photos (draw a polygon to filter)" if self.polygon is None else f"{n} photos inside the polygon"
-        self.label.value = f"<b>{len(self.photos)}</b> GPS photos &middot; selection: <b>{msg}</b>"
-
-    def inside_mask(self) -> np.ndarray:
-        """Boolean mask of photos inside the drawn area (all ``True`` if nothing drawn).
-
-        Returns:
-            Array of shape ``[num_photos]``.
-        """
-        import shapely
-
-        if self.polygon is None:
-            return np.ones(len(self.photos), dtype=bool)
-        lons = np.array([p[2] for p in self.photos])
-        lats = np.array([p[1] for p in self.photos])
-        return shapely.contains_xy(self.polygon, lons, lats)
+        n = int(self.included.sum())
+        self.label.value = f"<b>{n}</b> of {len(self.photos)} photos included"
+        if self.selection_file:
+            self.save(self.selection_file)
 
     @property
     def selected(self) -> list[Path]:
-        """Photos inside the drawn area (all photos if nothing is drawn).
+        """Included photos.
 
         Returns:
-            Selected image paths.
+            Paths of the included photos.
         """
-        return [p for (p, _, _), ok in zip(self.photos, self.inside_mask()) if ok]
+        return [p for (p, _, _), ok in zip(self.photos, self.included) if ok]
 
-    def save(self, path: str | Path) -> Path | None:
-        """Write the drawn area as GeoJSON (EPSG:4326).
+    @property
+    def all_selected(self) -> bool:
+        """Whether every photo is included.
+
+        Returns:
+            ``True`` if nothing is excluded.
+        """
+        return bool(self.included.all())
+
+    def save(self, path: str | Path) -> Path:
+        """Write the included photo names, one per line (usable as ``--image-list``).
 
         Args:
-            path: Output ``.geojson`` path.
+            path: Output text file.
 
         Returns:
-            The path, or ``None`` if no polygon was drawn.
+            The written path.
         """
-        if self.polygon is None:
-            return None
-        from shapely.geometry import mapping
-
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        fc = {"type": "FeatureCollection",
-              "features": [{"type": "Feature", "properties": {}, "geometry": mapping(self.polygon)}]}
-        path.write_text(json.dumps(fc))
+        path.write_text("\n".join(p.name for p in self.selected) + "\n")
         return path
 
     def _ipython_display_(self) -> None:
@@ -375,10 +458,10 @@ def ortho_map(
         max_size: Longest side of the displayed overlay in pixels.
         gcps: Optional ``{name: [x, y, z]}`` in the raster's CRS, drawn as markers.
         height: Map height (CSS).
-        opacity: Initial overlay opacity (a slider is shown below the map).
+        opacity: Initial overlay opacity.
 
     Returns:
-        An ``ipywidgets.VBox`` with the map and an opacity slider.
+        An ``ipywidgets.VBox`` with the map and opacity sliders (orthophoto, basemap).
     """
     import ipywidgets as widgets
     import rasterio
@@ -401,6 +484,4 @@ def ortho_map(
             m.add(CircleMarker(location=(lat, lon), radius=6, color="red", fill_opacity=0, weight=2, title=name))
             m.add(Marker(location=(lat, lon), icon=label_icon(name), draggable=False, title=name))
     m.fit_bounds([[south, west], [north, east]])
-    slider = widgets.FloatSlider(value=opacity, min=0, max=1, step=0.05, description="opacity")
-    widgets.jslink((slider, "value"), (overlay, "opacity"))
-    return widgets.VBox([m, slider])
+    return widgets.VBox([m, opacity_sliders(m, overlay)])

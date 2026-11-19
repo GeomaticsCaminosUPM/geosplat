@@ -35,6 +35,7 @@ def add_options(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     sel.add_argument("--image-stride", type=int, default=None, help="Use every N-th image.")
     sel.add_argument("--polygon", default=None, help="Area of interest (.gpkg/.shp/.geojson); GPS images inside only.")
     sel.add_argument("--polygon-buffer", type=float, default=None, help="Grow the polygon by this many meters.")
+    sel.add_argument("--image-list", default=None, help="Text file with the photo names to use (one per line).")
     sel.add_argument("--max-image-size", type=int, default=None, help="Downscale images (px).")
 
     sfm = p.add_argument_group("structure from motion")
@@ -97,6 +98,7 @@ def configs_from_args(
         max_image_size=a.max_image_size, matcher=a.matcher, mapper=a.mapper, camera_model=a.camera_model,
         max_num_features=a.max_features, single_camera=off(a.multi_camera), overwrite=on(a.overwrite_sfm),
         max_images=a.max_images, image_stride=a.image_stride, polygon=a.polygon, polygon_buffer=a.polygon_buffer,
+        image_list=a.image_list,
     )
     cli_train = dict(
         iterations=a.iterations, max_resolution=a.max_resolution, sh_degree=a.sh_degree,

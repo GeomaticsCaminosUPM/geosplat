@@ -37,21 +37,24 @@ def _show_image(path: str | Path, title: str = "", size: float = 10.0) -> None:
     plt.show()
 
 
-def photos(images_dir: str | Path, use_map: bool = True, thumbnails: int = 8) -> object | None:
+def photos(
+    images_dir: str | Path, use_map: bool = True, thumbnails: int = 8, selection_file: str | Path | None = None
+) -> object | None:
     """Show the input photos.
 
     With GPS (3+ photos), shows an interactive Google Hybrid/Satellite map of
-    photo positions where a polygon can be drawn to select photos. Otherwise
-    shows a grid of thumbnails.
+    photo positions where photos can be included / excluded (shapes, clicks,
+    buttons). Otherwise shows a grid of thumbnails.
 
     Args:
         images_dir: Photo folder.
         use_map: Use the interactive map when photos have GPS.
         thumbnails: Number of thumbnails without GPS.
+        selection_file: Optional text file to load / save the selection.
 
     Returns:
-        The :class:`geosplat.mapview.PhotoSelector` (use ``.polygon``,
-        ``.selected``, ``.save()``), or ``None`` without GPS.
+        The :class:`geosplat.mapview.PhotoSelector` (use ``.selected``,
+        ``.all_selected``, ``.save()``), or ``None`` without GPS.
     """
     from IPython.display import display
 
@@ -59,7 +62,7 @@ def photos(images_dir: str | Path, use_map: bool = True, thumbnails: int = 8) ->
     if use_map and sum(read_gps(p) is not None for p in paths) >= 3:
         from .mapview import PhotoSelector
 
-        selector = PhotoSelector(images_dir)
+        selector = PhotoSelector(images_dir, selection_file=selection_file)
         display(selector)
         return selector
     import matplotlib.pyplot as plt

@@ -8,6 +8,9 @@ build/
 .pytest_cache/
 .ipynb_checkpoints/
 
+# Generated / executed test notebooks
+tests/notebooks/
+
 # Outputs of every example (SfM work dirs, trained .ply, renders, GIFs)
 examples/*/output*/
 *.log

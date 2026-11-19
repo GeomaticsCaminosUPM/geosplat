@@ -51,7 +51,7 @@ class GCPPicker:
         from ipyleaflet import CircleMarker, LayerGroup, Map, Marker, ScaleControl
         from pyproj import Transformer
 
-        from .mapview import _add_other_google_layers, _basemap, label_icon, ortho_overlay
+        from .mapview import _add_other_google_layers, _basemap, label_icon, opacity_sliders, ortho_overlay
 
         self.gcps = dict(gcps)
         self.names = list(self.gcps)
@@ -92,7 +92,7 @@ class GCPPicker:
         )
         self.map.on_interaction(self._on_click)
         self.widget = widgets.VBox([help_text, widgets.HBox([self.name_select, delete_btn, clear_btn]),
-                                    self.map, self.table])
+                                    self.map, opacity_sliders(self.map, overlay), self.table])
         if self.picks_file and self.picks_file.exists():
             for name, (lat, lon) in json.loads(self.picks_file.read_text()).items():
                 if name in self.gcps:

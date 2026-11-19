@@ -273,8 +273,12 @@ better than that. `gcp_check.json` reports DSM height minus GCP height, and the 
 ## Tests
 
 ```bash
-uv run pytest
+uv run pytest                 # quick unit tests (seconds)
+uv run pytest --run-slow      # + end-to-end tests with the very_fast preset (~2 min, GPU)
 ```
+
+The slow tests run `examples/run.ipynb` (copies generated in `tests/notebooks/`) on the Seneca sample (and on
+`dron2024` if present), and run `examples/run.py` on `dron2024` and `south_building` when their photos are present.
 
 ## Package layout
 

@@ -47,6 +47,8 @@ class SfMConfig:
         polygon: Vector file (``.gpkg``, ``.shp``, ``.geojson``...) with an area
             of interest; only GPS-tagged images taken inside it are used.
         polygon_buffer: Grow the polygon by this many meters before filtering.
+        image_list: Only use these photos: a list of file names, or a text file
+            with one name per line (e.g. saved by the notebook photo map).
     """
 
     max_image_size: int = 1600
@@ -63,6 +65,7 @@ class SfMConfig:
     image_stride: int = 1
     polygon: str | Path | None = None
     polygon_buffer: float = 0.0
+    image_list: list[str] | str | Path | None = None
 
 
 def select_images(image_dir: str | Path, config: SfMConfig) -> list[Path]:
@@ -81,6 +84,13 @@ def select_images(image_dir: str | Path, config: SfMConfig) -> list[Path]:
     from .selection import filter_by_polygon, subsample
 
     images = list_images(image_dir)
+    if config.image_list is not None:
+        names = config.image_list
+        if isinstance(names, (str, Path)):
+            names = Path(names).read_text().split()
+        wanted = {Path(n).name for n in names}
+        images = [p for p in images if p.name in wanted]
+        logger.info("Image list: %d photos selected", len(images))
     if config.polygon:
         images = filter_by_polygon(images, config.polygon, config.polygon_buffer)
     images = subsample(images, config.max_images, config.image_stride)
