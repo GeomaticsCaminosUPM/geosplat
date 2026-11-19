@@ -86,8 +86,11 @@ jobs:
         run: |
           nvcc --version
           # Build from the sdist; recent torch headers need C++20 but gsplat's setup.py pins -std=c++17 for nvcc.
-          python -m pip download --no-deps --no-binary :all: "gsplat==${{ inputs.gsplat }}" -d src
-          tar xzf src/gsplat-*.tar.gz -C src
+          # Fetch the sdist directly ("pip download" would run setup.py, which imports torch, in an isolated env).
+          mkdir -p src
+          URL=$(curl -s "https://pypi.org/pypi/gsplat/${{ inputs.gsplat }}/json" | python -c "import sys, json; print(next(u['url'] for u in json.load(sys.stdin)['urls'] if u['packagetype'] == 'sdist'))")
+          curl -sL "$URL" -o src/gsplat.tar.gz
+          tar xzf src/gsplat.tar.gz -C src
           sed -i 's/-std=c++17/-std=c++20/' src/gsplat-*/setup.py
           python -m pip wheel --no-build-isolation --no-deps src/gsplat-*/ -w dist
           ls -la dist
