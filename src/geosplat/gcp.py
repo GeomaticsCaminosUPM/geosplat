@@ -51,7 +51,7 @@ class GCPPicker:
         from ipyleaflet import CircleMarker, LayerGroup, Map, Marker, ScaleControl
         from pyproj import Transformer
 
-        from .mapview import _add_other_google_layers, _basemap, label_icon, opacity_sliders, ortho_overlay
+        from .mapview import MAX_ZOOM, _add_other_google_layers, _basemap, label_icon, opacity_sliders, ortho_overlay
 
         self.gcps = dict(gcps)
         self.names = list(self.gcps)
@@ -61,7 +61,7 @@ class GCPPicker:
         to_ll = Transformer.from_crs(self.crs, "EPSG:4326", always_xy=True)
 
         overlay, ((south, west), (north, east)) = ortho_overlay(ortho_tif, max_size=4096)
-        self.map = Map(center=((north + south) / 2, (east + west) / 2), zoom=19, max_zoom=24,
+        self.map = Map(center=((north + south) / 2, (east + west) / 2), zoom=19, max_zoom=MAX_ZOOM,
                        basemap=_basemap("google_satellite"), scroll_wheel_zoom=True,
                        layout=widgets.Layout(height=height))
         self.map.add(overlay)

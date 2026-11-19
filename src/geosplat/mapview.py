@@ -19,6 +19,9 @@ import numpy as np
 from .geo import read_gps, read_orientation
 from .sfm import list_images
 
+MAX_ZOOM = 24          # map zoom limit; basemap tiles are upscaled beyond their native zoom
+NATIVE_ZOOM = 20       # deepest zoom level fetched from the tile servers
+
 BASEMAPS = {
     "google_hybrid": ("https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}", "Google"),
     "google_satellite": ("https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}", "Google"),
@@ -42,7 +45,7 @@ def _basemap(name: str) -> object:
 
     url, attribution = BASEMAPS[name]
     label = name.replace("_", " ").title()
-    return TileLayer(url=url, attribution=attribution, name=label, max_zoom=22, max_native_zoom=20, base=True)
+    return TileLayer(url=url, attribution=attribution, name=label, max_zoom=MAX_ZOOM, max_native_zoom=NATIVE_ZOOM, base=True)
 
 
 def _add_other_google_layers(m: object, current: str) -> None:
@@ -256,7 +259,7 @@ class PhotoSelector:
 
         lats = np.array([p[1] for p in self.photos])
         lons = np.array([p[2] for p in self.photos])
-        self.map = Map(center=(float(lats.mean()), float(lons.mean())), zoom=17, basemap=_basemap(basemap),
+        self.map = Map(center=(float(lats.mean()), float(lons.mean())), zoom=17, max_zoom=MAX_ZOOM, basemap=_basemap(basemap),
                        scroll_wheel_zoom=True, layout=widgets.Layout(height=height))
         self.map.add(ScaleControl(position="bottomleft"))
         _add_other_google_layers(self.map, basemap)
@@ -469,7 +472,7 @@ def ortho_map(
     from pyproj import Transformer
 
     overlay, ((south, west), (north, east)) = ortho_overlay(tif_path, max_size, opacity)
-    m = Map(center=((north + south) / 2, (east + west) / 2), zoom=18, basemap=_basemap(basemap),
+    m = Map(center=((north + south) / 2, (east + west) / 2), zoom=18, max_zoom=MAX_ZOOM, basemap=_basemap(basemap),
             scroll_wheel_zoom=True, layout=widgets.Layout(height=height))
     m.add(overlay)
     m.add(ScaleControl(position="bottomleft"))
