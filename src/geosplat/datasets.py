@@ -109,3 +109,73 @@ def download_seneca(images_dir: str | Path, num_images: int | None = 40, start: 
         with urllib.request.urlopen(f["download_url"]) as resp, open(images_dir / f["name"], "wb") as out:
             shutil.copyfileobj(resp, out)
     return images_dir
+
+
+PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp")
+
+
+def unzip_images(zip_path: str | Path, out_dir: str | Path | None = None) -> Path:
+    """Extract the photos (and CSV files, e.g. GCPs) of a zip into a flat folder.
+
+    Subfolders are flattened; ``__MACOSX`` and hidden files are skipped. If the
+    output folder already contains photos, nothing is extracted again.
+
+    Args:
+        zip_path: Zip archive.
+        out_dir: Destination folder. Default: ``images/`` next to the zip if the
+            zip is called ``images.zip``, otherwise a folder named like the zip.
+
+    Returns:
+        The folder with the photos.
+    """
+    zip_path = Path(zip_path)
+    if out_dir is None:
+        out_dir = zip_path.parent / ("images" if zip_path.stem.lower() == "images" else zip_path.stem)
+    out_dir = Path(out_dir)
+    if out_dir.is_dir() and any(p.suffix.lower() in PHOTO_EXTENSIONS for p in out_dir.iterdir()):
+        return out_dir
+    out_dir.mkdir(parents=True, exist_ok=True)
+    count = 0
+    with zipfile.ZipFile(zip_path) as zf:
+        for info in zf.infolist():
+            parts = Path(info.filename).parts
+            if info.is_dir() or "__MACOSX" in parts or any(p.startswith(".") for p in parts):
+                continue
+            if Path(info.filename).suffix.lower() not in PHOTO_EXTENSIONS + (".csv", ".txt"):
+                continue
+            target = out_dir / Path(info.filename).name
+            if target.exists():  # same name in another subfolder
+                target = out_dir / f"{Path(info.filename).parent.name}_{Path(info.filename).name}"
+            with zf.open(info) as src, open(target, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            count += 1
+    logger.info("Extracted %d files from %s to %s", count, zip_path.name, out_dir)
+    return out_dir
+
+
+def resolve_image_source(path: str | Path) -> Path:
+    """Turn a user-given photo source into a folder of photos.
+
+    Accepts a folder of photos, a dataset folder with ``images/``, a ``.zip``
+    of photos, or a dataset folder containing a single zip (and no photos),
+    which is extracted to ``images/``.
+
+    Args:
+        path: Folder or zip.
+
+    Returns:
+        Folder containing the photos.
+    """
+    path = Path(path).expanduser()
+    if path.is_file() and path.suffix.lower() == ".zip":
+        return unzip_images(path)
+    if path.is_dir():
+        if (path / "images").is_dir():
+            return resolve_image_source(path / "images")
+        has_photos = any(p.suffix.lower() in PHOTO_EXTENSIONS for p in path.iterdir())
+        zips = sorted(path.glob("*.zip")) + sorted(path.glob("*.ZIP"))
+        if not has_photos and len(zips) == 1:
+            return unzip_images(zips[0], path if path.name == "images" else path / "images")
+    elif path.with_suffix(".zip").is_file():  # "flight" given, "flight.zip" exists
+        return unzip_images(path.with_suffix(".zip"), path)
+    return path

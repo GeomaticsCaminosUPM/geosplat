@@ -17,13 +17,11 @@ examples/*/output*/
 nohup.out
 *.ply
 
-# Inputs that can be downloaded again (keep the download scripts)
-examples/south_building/images/
-examples/seneca/images/
-examples/*/*.zip
-
-# Private drone photos and ground control points
-examples/dron2024/images/
-
-# Your own datasets: uncomment to keep photos out of git
-# examples/*/images/
+# Photos of every example dataset (downloadable samples, private flights, your own data)
+examples/*/images/
+examples/**/*.zip
+examples/**/*.[jJ][pP][gG]
+examples/**/*.[jJ][pP][eE][gG]
+examples/**/*.[pP][nN][gG]
+examples/**/*.[tT][iI][fF]
+examples/**/*.[tT][iI][fF][fF]

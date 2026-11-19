@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("dataset", ["dron2024", "south_building"])
+@pytest.mark.parametrize("dataset", ["dron2024", "south_building", "seneca"])
 def test_run_script_very_fast(dataset: str) -> None:
     """``run.py`` produces every product for a dataset.
 

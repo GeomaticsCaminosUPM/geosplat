@@ -1,6 +1,6 @@
 [project]
 name = "geosplat"
-version = "0.1.0"
+version = "1.0.0"
 description = "Turn a folder of images into a 3D Gaussian Splatting scene (COLMAP SfM + gsplat training)."
 readme = "README.md"
 authors = [
@@ -14,7 +14,7 @@ dependencies = [
     "tqdm",
     "pycolmap-cuda12>=4.2; sys_platform == 'linux' and platform_machine == 'x86_64'",
     "pycolmap>=3.11; sys_platform != 'linux' or platform_machine != 'x86_64'",
-    "gsplat>=1.4",
+    "gsplat==1.5.3",          # pinned: prebuilt Colab wheels (.github/workflows/gsplat-wheels.yml) match it
     "plyfile",
     "pyproj",
     "rasterio",

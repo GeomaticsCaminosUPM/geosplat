@@ -138,7 +138,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="geosplat",
         description="Fast orthophoto, point clouds, Gaussian splat and true orthophoto from a folder of photos.",
     )
-    p.add_argument("image_dir", help="Folder with input images (or an undistorted COLMAP project).")
+    p.add_argument("image_dir", help="Folder or .zip with the input images (or an undistorted COLMAP project).")
     p.add_argument("-o", "--output", required=True, help="Output folder.")
     return add_options(p)
 

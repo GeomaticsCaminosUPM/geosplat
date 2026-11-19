@@ -1,0 +1,109 @@
+# Prebuilt gsplat wheels for Google Colab (no 3-5 min CUDA compile on first run).
+#
+# Run it from the Actions tab ("gsplat wheels" > "Run workflow") with the versions the
+# notebook prints when no prebuilt wheel exists (Python, torch and CUDA of the Colab runtime).
+# Each wheel is attached to a release tagged gsplat-<ver>-torch<torch>-cu<cuda>-cp<py>,
+# which is where examples/run.ipynb looks for it.
+name: gsplat wheels
+
+on:
+  workflow_dispatch:
+    inputs:
+      python:
+        description: "Python version(s), comma separated (e.g. 3.12,3.13)"
+        required: true
+        default: "3.12"
+      torch:
+        description: "torch version(s), comma separated, without +cuXXX (e.g. 2.8.0)"
+        required: true
+        default: "2.8.0"
+      cuda:
+        description: "CUDA version of that torch build (torch.version.cuda, e.g. 12.6)"
+        required: true
+        default: "12.6"
+      gsplat:
+        description: "gsplat version (must match the pin in pyproject.toml)"
+        required: true
+        default: "1.5.3"
+      arch_list:
+        description: "TORCH_CUDA_ARCH_LIST (Colab: T4=7.5, A100=8.0, L4=8.9, H100=9.0)"
+        required: true
+        default: "7.5;8.0;8.6;8.9;9.0"
+
+permissions:
+  contents: write
+
+jobs:
+  matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.m.outputs.python }}
+      torch: ${{ steps.m.outputs.torch }}
+    steps:
+      - id: m
+        run: |
+          to_json() { echo "$1" | python3 -c "import sys, json; print(json.dumps([v.strip() for v in sys.stdin.read().split(',') if v.strip()]))"; }
+          echo "python=$(to_json '${{ inputs.python }}')" >> "$GITHUB_OUTPUT"
+          echo "torch=$(to_json '${{ inputs.torch }}')" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: matrix
+    runs-on: ubuntu-22.04          # same glibc as Colab
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ${{ fromJson(needs.matrix.outputs.python) }}
+        torch: ${{ fromJson(needs.matrix.outputs.torch) }}
+    steps:
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install CUDA toolkit ${{ inputs.cuda }}
+        run: |
+          CU="${{ inputs.cuda }}"
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends "cuda-toolkit-${CU/./-}"
+          echo "CUDA_HOME=/usr/local/cuda-${CU}" >> "$GITHUB_ENV"
+          echo "/usr/local/cuda-${CU}/bin" >> "$GITHUB_PATH"
+
+      - name: Install torch ${{ matrix.torch }}
+        run: |
+          CU="${{ inputs.cuda }}"
+          python -m pip install -U pip wheel setuptools ninja packaging
+          python -m pip install "torch==${{ matrix.torch }}" --index-url "https://download.pytorch.org/whl/cu${CU//./}"
+          python -m pip install numpy jaxtyping rich typing_extensions
+
+      - name: Build gsplat ${{ inputs.gsplat }}
+        env:
+          TORCH_CUDA_ARCH_LIST: ${{ inputs.arch_list }}
+          MAX_JOBS: "4"
+        run: |
+          nvcc --version
+          # Build from the sdist; recent torch headers need C++20 but gsplat's setup.py pins -std=c++17 for nvcc.
+          python -m pip download --no-deps --no-binary :all: "gsplat==${{ inputs.gsplat }}" -d src
+          tar xzf src/gsplat-*.tar.gz -C src
+          sed -i 's/-std=c++17/-std=c++20/' src/gsplat-*/setup.py
+          python -m pip wheel --no-build-isolation --no-deps src/gsplat-*/ -w dist
+          ls -la dist
+          python -c "import zipfile, glob; w = glob.glob('dist/*.whl')[0]; n = zipfile.ZipFile(w).namelist(); assert any('csrc' in f and f.endswith('.so') for f in n), 'CUDA extension missing'; print('OK', w)"
+
+      - name: Release tag
+        id: tag
+        run: |
+          CU="${{ inputs.cuda }}"; PY="${{ matrix.python }}"
+          echo "tag=gsplat-${{ inputs.gsplat }}-torch${{ matrix.torch }}-cu${CU//./}-cp${PY//./}" >> "$GITHUB_OUTPUT"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.tag }}
+          files: dist/*.whl
+          body: |
+            Prebuilt gsplat ${{ inputs.gsplat }} for Python ${{ matrix.python }}, torch ${{ matrix.torch }}, CUDA ${{ inputs.cuda }}
+            (GPU archs ${{ inputs.arch_list }}). Used automatically by examples/run.ipynb on Google Colab.

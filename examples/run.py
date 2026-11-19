@@ -1,7 +1,8 @@
 """Run geosplat on any photo folder: fast orthophoto, point clouds, Gaussian splat, true orthophoto.
 
-``SOURCE`` is either the name of a folder in ``examples/`` (``dron2024``) or any
-path (``/data/flight1`` or ``/data/flight1/images``). Photos are read from
+``SOURCE`` is the name of a folder in ``examples/`` (``dron2024``), any folder
+(``/data/flight1`` or ``/data/flight1/images``) or a zip of photos
+(``/data/flight1.zip``, extracted automatically next to it). Photos are read from
 ``<dataset>/images/`` if it exists, otherwise from the folder itself. Results go
 to ``<dataset>/output_<preset>/`` unless ``-o`` is given.
 
@@ -16,6 +17,7 @@ Priority: command line > config file > preset > defaults.
 
 Examples::
 
+    uv run python examples/run.py seneca --preset fast              # public sample, downloaded on first use
     uv run python examples/run.py dron2024                          # medium preset
     uv run python examples/run.py dron2024 --preset very_fast
     uv run python examples/run.py /data/flight1 --preset fast --max-images 80 --polygon aoi.gpkg
@@ -29,10 +31,13 @@ import json
 import logging
 from pathlib import Path
 
-from geosplat import images_to_splat, render_path, save_gif
+from geosplat import datasets, images_to_splat, render_path, save_gif
 from geosplat.cli import add_options, configs_from_args
 
 EXAMPLES_DIR = Path(__file__).resolve().parent
+
+# Public sample datasets downloaded automatically on first use.
+SAMPLES = {"seneca": datasets.download_seneca, "south_building": datasets.download_south_building}
 
 
 def parse_args() -> argparse.Namespace:
@@ -62,12 +67,14 @@ def resolve_source(source: str) -> tuple[Path, Path]:
         SystemExit: If no photo folder is found.
     """
     path = Path(source).expanduser()
-    if not path.is_dir():
+    if not path.exists() and not path.with_suffix(".zip").exists():
         path = EXAMPLES_DIR / source
-    if (path / "images").is_dir():
-        return path, path / "images"
-    if path.is_dir():
-        return (path.parent if path.name == "images" else path), path
+    if source in SAMPLES and not (EXAMPLES_DIR / source / "images").is_dir():
+        print(f"Downloading the {source} sample photos...")
+        SAMPLES[source](EXAMPLES_DIR / source / "images", num_images=40)
+    images = datasets.resolve_image_source(path)        # also extracts a .zip of photos
+    if images.is_dir():
+        return (images.parent if images.name == "images" else images), images
     hint = f" (run examples/{source}/download.py first)" if (EXAMPLES_DIR / source / "download.py").exists() else ""
     raise SystemExit(f"No photo folder found for {source!r}{hint}")
 

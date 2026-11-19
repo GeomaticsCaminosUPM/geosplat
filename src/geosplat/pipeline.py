@@ -112,7 +112,8 @@ def images_to_splat(
             metrics.json, renders/, timings.json
 
     Args:
-        image_dir: Folder with the input images (or an undistorted COLMAP project).
+        image_dir: Folder with the input images, a ``.zip`` of them (extracted
+            automatically), or an undistorted COLMAP project.
         output_dir: Folder for all outputs.
         sfm_config: Structure-from-Motion and image-selection options.
         train_config: Training options.
@@ -137,6 +138,9 @@ def images_to_splat(
     timings: dict[str, float] = {}
 
     t = time.time()
+    from .datasets import resolve_image_source
+
+    image_dir = resolve_image_source(image_dir)          # folder, dataset folder or .zip of photos
     if is_colmap_project(image_dir):
         logger.info("%s is a COLMAP project; skipping SfM", image_dir)
         colmap_dir, originals = Path(image_dir), None

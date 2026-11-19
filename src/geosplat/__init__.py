@@ -23,7 +23,7 @@ from .viewer import save_viewer, show
 from .ortho import make_fast_orthophoto, make_orthophoto
 from .pointcloud import export_point_clouds
 
-__version__ = "0.1.0"
+__version__ = "1.0.0"
 
 __all__ = [
     "Camera",

@@ -1188,7 +1188,7 @@ wheels = [
 
 [[package]]
 name = "geosplat"
-version = "0.1.0"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "gsplat" },
@@ -1237,7 +1237,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "gsplat", specifier = ">=1.4" },
+    { name = "gsplat", specifier = "==1.5.3" },
     { name = "ipyleaflet", marker = "extra == 'notebook'" },
     { name = "jupyter", marker = "extra == 'notebook'" },
     { name = "matplotlib", marker = "extra == 'notebook'" },

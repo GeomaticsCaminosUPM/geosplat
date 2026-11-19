@@ -1,5 +1,7 @@
 # geosplat
 
+**Version 1.0.0**
+
 <a href="https://colab.research.google.com/github/GeomaticsCaminosUPM/geosplat/blob/main/examples/run.ipynb"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"/></a>
 
 Turn a folder of photos into a **fast orthophoto**, a **point cloud**, a **3D Gaussian Splatting** scene and a
@@ -38,6 +40,20 @@ uv sync                       # or, in any environment: pip install git+https://
 
 gsplat compiles its CUDA kernels **the first time it runs** (2–5 min, then cached in `~/.cache/torch_extensions`).
 geosplat finds `nvcc` on `PATH` or in `/usr/local/cuda*`; you can also set `CUDA_HOME`.
+
+### Faster start on Google Colab (prebuilt gsplat)
+
+On Colab the notebook first tries to install a **prebuilt gsplat wheel** from this repository's GitHub releases. That
+takes seconds instead of the 3–5 min compile. Wheels are built by the **gsplat wheels** workflow
+(`.github/workflows/gsplat-wheels.yml`) for a given Python / torch / CUDA combination:
+
+1. Open the notebook in Colab. If no wheel matches, the setup cell prints the versions to use, e.g.
+   `python=3.12, torch=2.8.0, cuda=12.6`.
+2. On GitHub: **Actions ▸ gsplat wheels ▸ Run workflow**, enter those versions (several can be given,
+   comma-separated) and run. A build takes about 15–30 min on GitHub's free runners.
+3. The next Colab session installs the wheel automatically. Re-run the workflow when Colab upgrades torch.
+
+Without a matching wheel the CUDA code is compiled once and cached in Google Drive (`MyDrive/geosplat_cache/`).
 
 ## Quick start
 
@@ -167,6 +183,9 @@ CSV in `images/` is used as ground control points. An optional `config.json` can
 examples/
 ├── run.ipynb                # notebook: any photo folder, local or Colab
 ├── run.py                   # script: example name or any photo folder, every option
+├── seneca/                  # OpenDroneMap drone flight, GPS (downloadable)
+│   ├── download.py
+│   └── images/
 ├── south_building/          # hand-held photos, no GPS (downloadable)
 │   ├── download.py
 │   └── images/
@@ -175,8 +194,8 @@ examples/
 ```
 
 ```bash
-uv run python examples/south_building/download.py                # 40 photos (~420 MB download)
-uv run python examples/run.py south_building --preset fast
+uv run python examples/run.py seneca --preset fast                  # downloads 40 GPS drone photos (~90 MB) on first use
+uv run python examples/run.py south_building --preset fast          # downloads 40 photos (~420 MB archive) on first use
 uv run python examples/run.py dron2024 --preset medium
 ```
 
