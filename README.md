@@ -190,7 +190,7 @@ examples/
 │   ├── download.py
 │   └── images/
 └── drone2024/                # private drone flight, GPS + ground control points (not in git)
-    └── images/              # photos + targets.csv (GCPs: name,x,y,z with header, detected automatically)
+    └── images/              # photos + targets.csv (GCPs); any file names, all detected automatically
 ```
 
 ```bash
@@ -291,7 +291,7 @@ from the file (geo.txt, vector), otherwise give `--positions-crs EPSG:25830`; lo
 With positions, every output GeoTIFF and point cloud is georeferenced. Without them, the outputs are in a local
 frame with no CRS.
 
-Ground control points: put a GCP file next to the photos and it is detected automatically:
+Ground control points: put a GCP file (any name) next to the photos and it is detected automatically:
 
 - **`.gpkg`, `.geojson`, `.shp`** (or other vector formats): points with a CRS. The name comes from a `name` / `id` /
   `label` field and the height from a 3D geometry or a `z` / `h` / `height` field.
