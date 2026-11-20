@@ -15,7 +15,7 @@ from pathlib import Path
 
 import numpy as np
 
-from .geo import read_gps
+from .positions import photo_positions
 from .sfm import list_images
 
 
@@ -59,7 +59,7 @@ def photos(
     from IPython.display import display
 
     paths = list_images(images_dir)
-    if use_map and sum(read_gps(p) is not None for p in paths) >= 3:
+    if use_map and len(photo_positions(images_dir)) >= 3:
         from .mapview import PhotoSelector
 
         selector = PhotoSelector(images_dir, selection_file=selection_file)

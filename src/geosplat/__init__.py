@@ -8,7 +8,7 @@ Typical use::
     print(result.outputs)  # splat.ply, points_sparse.ply, points_dense.ply, ortho/*.tif (GPS images)
 """
 
-from . import notebook, plots
+from . import notebook, plots, positions
 from .gaussians import init_gaussians, load_ply, save_ply
 from .geo import GeoConfig, GeoReference, georeference
 from .pipeline import PipelineResult, images_to_splat
@@ -31,6 +31,7 @@ __all__ = [
     "GeoReference",
     "PRESETS",
     "notebook",
+    "positions",
     "plots",
     "PipelineResult",
     "make_configs",

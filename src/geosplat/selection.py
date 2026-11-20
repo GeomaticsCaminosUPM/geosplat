@@ -67,16 +67,18 @@ def filter_by_polygon(images: list[Path], polygon_path: str | Path, buffer_m: fl
     from pyproj import CRS, Transformer
     from shapely.ops import transform as shapely_transform
 
-    from .geo import read_gps, utm_crs_for
+    from .geo import utm_crs_for
+    from .positions import photo_positions, position_of
 
     poly, crs = read_polygon(polygon_path)
     crs = CRS.from_user_input(crs) if crs else CRS.from_epsg(4326)
-    gps = {p: read_gps(p) for p in images}
+    positions = photo_positions(images[0].parent) if images else {}
+    gps = {p: position_of(p, positions) for p in images}
     with_gps = [p for p, g in gps.items() if g is not None]
     if not with_gps:
-        raise ValueError("Polygon filtering needs GPS-tagged images, but none have GPS EXIF data.")
-    lat = np.array([gps[p][0] for p in with_gps])
-    lon = np.array([gps[p][1] for p in with_gps])
+        raise ValueError("Polygon filtering needs photo positions (GPS EXIF or a positions file), but none were found.")
+    lat = np.array([gps[p].lat for p in with_gps])
+    lon = np.array([gps[p].lon for p in with_gps])
 
     if buffer_m and not crs.is_projected:
         # Buffer in meters: work in the local UTM zone.

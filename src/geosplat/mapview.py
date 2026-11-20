@@ -16,7 +16,8 @@ from pathlib import Path
 
 import numpy as np
 
-from .geo import read_gps, read_orientation
+from .geo import read_orientation
+from .positions import photo_positions, position_of
 from .sfm import list_images
 
 MAX_ZOOM = 24          # map zoom limit; basemap tiles are upscaled beyond their native zoom
@@ -112,19 +113,20 @@ def opacity_sliders(m: object, overlay: object | None = None) -> object:
 
 
 def photo_locations(image_dir: str | Path) -> list[tuple[Path, float, float]]:
-    """GPS positions of the photos in a folder.
+    """Positions of the photos in a folder (EXIF, sidecars or external files, see :mod:`geosplat.positions`).
 
     Args:
         image_dir: Folder with images.
 
     Returns:
-        List of ``(path, latitude, longitude)`` for images with GPS EXIF tags.
+        List of ``(path, latitude, longitude)`` for photos with a known position.
     """
+    positions = photo_positions(image_dir)
     out = []
     for p in list_images(image_dir):
-        g = read_gps(p)
-        if g is not None:
-            out.append((p, g[0], g[1]))
+        pos = position_of(p, positions)
+        if pos is not None:
+            out.append((p, pos.lat, pos.lon))
     return out
 
 
@@ -153,7 +155,8 @@ def photo_kind(path: Path) -> tuple[str, float]:
         ``(kind, yaw_deg)`` where kind is ``"nadir"`` (pitch <= -75 deg),
         ``"oblique"`` (known heading, not nadir) or ``"unknown"`` (no metadata).
     """
-    o = read_orientation(path)
+    pos = position_of(path, photo_positions(Path(path).parent))
+    o = (pos.yaw, pos.pitch) if pos is not None and pos.yaw is not None else read_orientation(path)
     if o is None:
         return "unknown", 0.0
     yaw, pitch = o

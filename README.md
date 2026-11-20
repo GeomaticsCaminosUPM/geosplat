@@ -272,6 +272,25 @@ Open `fast_orto/fast_orto.tif`, `ortho/orthophoto.tif` and `ortho/dsm.tif` in QG
 **Layer Properties ▸ Symbology ▸ Singleband pseudocolor**, or **Raster ▸ Analysis ▸ Hillshade**. Overlay your GCPs
 or a reference orthophoto (e.g. PNOA WMS in Spain) to check the georeferencing.
 
+Photo positions: they are read from every common source, so the photos folder can contain whatever your
+workflow produces. Files are searched in the photo folder and its parent; `--positions FILE` forces one.
+
+| Source | Example |
+| --- | --- |
+| EXIF GPS in each photo | most drones and phones |
+| XMP sidecars | `IMG_1.xmp` or `IMG_1.JPG.xmp` (Lightroom, RealityCapture) |
+| OpenDroneMap `geo.txt` | CRS on the first line, then `name x y z [yaw pitch roll]` |
+| CSV / TXT with photo names | Metashape / Pix4D reference exports, PPK output; lat/lon or X/Y, header optional |
+| Point layer with a photo-name field | `.gpkg`, `.geojson`, `.shp`, `.kml` |
+| DJI RTK `.MRK` | `*_Timestamp.MRK`, matched by the number at the end of each photo name |
+| GPX track | matched by capture time; the camera clock offset is read from EXIF or estimated |
+
+A positions file (geo.txt, CSV, vector, MRK) overrides EXIF, since it usually holds RTK/PPK positions. XMP sidecars
+override EXIF too, and GPX only fills photos that have no position. Projected coordinates need a CRS: it's read
+from the file (geo.txt, vector), otherwise give `--positions-crs EPSG:25830`; lon/lat is recognised automatically.
+With positions, every output GeoTIFF and point cloud is georeferenced. Without them, the outputs are in a local
+frame with no CRS.
+
 Ground control points: put a GCP file next to the photos and it is detected automatically:
 
 - **`.gpkg`, `.geojson`, `.shp`** (or other vector formats): points with a CRS. The name comes from a `name` / `id` /

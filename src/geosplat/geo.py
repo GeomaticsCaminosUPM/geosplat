@@ -38,6 +38,14 @@ class GeoConfig:
         gcps_crs: CRS of the GCP coordinates (e.g. ``"EPSG:25830"``), needed only
             for CSV files; ``None`` reads it from vector files or infers it from
             the photo positions.
+        positions: File with photo positions when the photos have no GPS EXIF (or
+            better positions, e.g. RTK/PPK): ODM ``geo.txt``, CSV / TXT, point layer,
+            DJI ``.MRK`` or ``.gpx``. ``None`` detects such files in the photo folder
+            and its parent.
+        positions_crs: CRS of projected coordinates in a positions table without
+            one (e.g. ``"EPSG:25830"``).
+        gpx_time_offset: Seconds to add to the camera clock to get UTC when
+            matching photos to a GPX track (``None``: EXIF offset tag or estimated).
         dense_min_opacity: Minimum Gaussian opacity (0-1) for a Gaussian center
             to become a point of ``points_dense.ply``, or ``"auto"`` (default)
             to choose it with Otsu's method on the opacity histogram. Lower =
@@ -52,6 +60,9 @@ class GeoConfig:
     gsd: float | None = None
     gcps: str | Path | None = None
     gcps_crs: str | None = None
+    positions: str | Path | None = None
+    positions_crs: str | None = None
+    gpx_time_offset: float | None = None
 
 
 @dataclass
@@ -286,16 +297,20 @@ def umeyama(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
     return T
 
 
-def georeference(scene: Scene, image_dir: str | Path, crs: str | None = None) -> GeoReference | None:
-    """Align a scene to GPS positions read from the original images.
+def georeference(
+    scene: Scene, image_dir: str | Path, crs: str | None = None, positions: dict | None = None
+) -> GeoReference | None:
+    """Align a scene to the positions of the original photos.
 
-    Images are matched to cameras by file stem, so ``image_dir`` should be the
-    folder with the original (EXIF-carrying) photos.
+    Positions come from :func:`geosplat.positions.photo_positions` (EXIF GPS,
+    XMP sidecars, ``geo.txt`` / CSV / vector / MRK files, GPX tracks). Photos
+    are matched to cameras by file name.
 
     Args:
         scene: Reconstructed scene (any coordinate frame).
         image_dir: Folder with the original images.
         crs: Target CRS; ``None`` uses the WGS84 UTM zone of the images.
+        positions: Precomputed ``photo_positions(image_dir, ...)`` result.
 
     Returns:
         The :class:`GeoReference`, or ``None`` if fewer than 3 cameras have GPS
@@ -303,17 +318,21 @@ def georeference(scene: Scene, image_dir: str | Path, crs: str | None = None) ->
     """
     from pyproj import Transformer
 
-    gps_by_stem = {}
-    for p in list_images(image_dir):
-        g = read_gps(p)
-        if g is not None:
-            gps_by_stem[p.stem] = g
-    pairs = [(c.center, gps_by_stem[Path(c.name).stem]) for c in scene.cameras if Path(c.name).stem in gps_by_stem]
+    from .positions import photo_positions
+
+    positions = positions if positions is not None else photo_positions(image_dir)
+    pairs = [(c.center, positions[Path(c.name).stem.lower()]) for c in scene.cameras
+             if Path(c.name).stem.lower() in positions]
     if len(pairs) < 3:
-        logger.info("Georeferencing skipped: %d cameras with GPS", len(pairs))
+        logger.info("Georeferencing skipped: %d cameras with a known position", len(pairs))
         return None
 
-    lat, lon, alt = (np.array(v) for v in zip(*[g for _, g in pairs]))
+    lat = np.array([p.lat for _, p in pairs])
+    lon = np.array([p.lon for _, p in pairs])
+    alt = np.array([p.alt for _, p in pairs], dtype=np.float64)
+    if not np.isfinite(alt).all():
+        logger.warning("Some photo positions have no altitude; using the mean of the known ones (or 0).")
+        alt[~np.isfinite(alt)] = np.nanmean(alt) if np.isfinite(alt).any() else 0.0
     crs = crs or utm_crs_for(float(np.median(lon)), float(np.median(lat)))
     east, north = Transformer.from_crs("EPSG:4326", crs, always_xy=True).transform(lon, lat)
     geo = np.stack([east, north, alt], axis=1)
@@ -434,17 +453,21 @@ def read_gcp_file(path: str | Path) -> tuple[dict[str, np.ndarray], str | None]:
     return points, meta.get("crs")
 
 
-def _photo_lonlat(image_dir: str | Path) -> np.ndarray:
-    """GPS positions of the photos in a folder.
+def _photo_lonlat(image_dir: str | Path, config: "GeoConfig | None" = None) -> np.ndarray:
+    """Positions of the photos in a folder (EXIF or external, see :mod:`geosplat.positions`).
 
     Args:
         image_dir: Folder with photos.
+        config: Optional georeferencing options (positions file / CRS).
 
     Returns:
         Array ``[N, 2]`` of ``(lon, lat)`` (empty if no photo has GPS).
     """
-    pos = [g for g in (read_gps(p) for p in list_images(image_dir)) if g is not None]
-    return np.array([[lon, lat] for lat, lon, _ in pos]).reshape(-1, 2)
+    from .positions import photo_positions
+
+    cfg = config or GeoConfig()
+    pos = photo_positions(image_dir, cfg.positions, cfg.positions_crs, cfg.gpx_time_offset).values()
+    return np.array([[p.lon, p.lat] for p in pos]).reshape(-1, 2)
 
 
 def infer_gcp_crs(points: dict[str, np.ndarray], photo_lonlat: np.ndarray) -> tuple[str | None, float]:
@@ -515,10 +538,14 @@ def find_gcp_file(image_dir: str | Path, min_points: int = 3) -> Path | None:
     image_dir = Path(image_dir)
     if not image_dir.is_dir():
         return None
+    from .positions import is_positions_file
+
     files = sorted(p for p in image_dir.iterdir() if p.suffix.lower() in GCP_VECTOR_EXTENSIONS)
     files += sorted(p for p in image_dir.iterdir() if p.suffix.lower() in GCP_TEXT_EXTENSIONS)
     for path in files:
         try:
+            if is_positions_file(path, image_dir):        # photo positions (geo.txt...), not GCPs
+                continue
             if len(read_gcp_file(path)[0]) >= min_points:
                 logger.info("Ground control points found: %s", path.name)
                 return path
@@ -551,7 +578,7 @@ def gcp_setup(image_dir: str | Path, config: GeoConfig) -> tuple[Path | None, st
     points, file_crs = read_gcp_file(path)
     crs = config.gcps_crs or file_crs
     if crs is None:
-        crs, score = infer_gcp_crs(points, _photo_lonlat(image_dir))
+        crs, score = infer_gcp_crs(points, _photo_lonlat(image_dir, config))
         if crs:
             logger.info("GCP CRS inferred as %s (%.0f %% of points inside the photographed area)", crs, 100 * score)
         else:

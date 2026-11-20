@@ -73,7 +73,11 @@ def prepare_scene(
     raw = load_colmap_scene(colmap_dir, normalize=False)
     geo = None
     if geo_config is not None and geo_config.enabled and image_dir is not None:
-        geo = georeference(raw, image_dir, geo_config.crs)
+        from .positions import photo_positions
+
+        positions = photo_positions(image_dir, geo_config.positions, geo_config.positions_crs,
+                                    geo_config.gpx_time_offset)
+        geo = georeference(raw, image_dir, geo_config.crs, positions)
     if geo is not None:
         down, north = gravity_in_scene(geo)
         scene = normalize_scene(raw, down=down, forward=north)

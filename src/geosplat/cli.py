@@ -72,6 +72,11 @@ def add_options(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     geo.add_argument("--dense-min-opacity", default=None,
                      type=lambda v: v if v == "auto" else float(v),
                      help="Min Gaussian opacity (0-1) for points_dense.ply, or 'auto' (default, Otsu).")
+    geo.add_argument("--positions", default=None,
+                     help="Photo positions file (geo.txt, CSV, .gpkg/.geojson, DJI .MRK, .gpx); default: auto-detected.")
+    geo.add_argument("--positions-crs", default=None, help="CRS of projected coordinates in a positions table.")
+    geo.add_argument("--gpx-offset", type=float, default=None,
+                     help="Seconds to add to the camera clock to get UTC for GPX matching (default: auto).")
     geo.add_argument("--no-geo", action="store_true", help="Do not georeference (ignore photo GPS).")
     geo.add_argument("--no-ortho", action="store_true", help="Do not produce the final orthophoto / DSM.")
     geo.add_argument("--no-fast-orto", action="store_true", help="Do not produce the fast orthophoto.")
@@ -112,6 +117,7 @@ def configs_from_args(
     )
     cli_geo = dict(
         enabled=off(a.no_geo), crs=a.crs, ortho=off(a.no_ortho), fast_orto=off(a.no_fast_orto), gsd=a.gsd, gcps=a.gcps, gcps_crs=a.gcps_crs,
+        positions=a.positions, positions_crs=a.positions_crs, gpx_time_offset=a.gpx_offset,
         dense_min_opacity=a.dense_min_opacity,
     )
 
