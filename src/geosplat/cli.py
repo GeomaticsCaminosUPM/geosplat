@@ -36,6 +36,10 @@ def add_options(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     sel.add_argument("--polygon", default=None, help="Area of interest (.gpkg/.shp/.geojson); GPS images inside only.")
     sel.add_argument("--polygon-buffer", type=float, default=None, help="Grow the polygon by this many meters.")
     sel.add_argument("--image-list", default=None, help="Text file with the photo names to use (one per line).")
+    sel.add_argument("--frames-per-video", type=int, default=None,
+                     help="Frames extracted from each video in the dataset (0 = ignore videos).")
+    sel.add_argument("--ignore-folder", action="append", default=None,
+                     help="Folder name pattern to skip (repeatable); ignore/results/output* are always skipped.")
     sel.add_argument("--max-image-size", type=int, default=None, help="Downscale images (px).")
 
     sfm = p.add_argument_group("structure from motion")
@@ -69,6 +73,12 @@ def add_options(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
                      help="GCP file: .gpkg/.shp/.geojson (with CRS) or CSV name,x,y,z (default: one next to the photos).")
     geo.add_argument("--gcps-crs", default=None,
                      help="CRS of a CSV GCP file, e.g. EPSG:25830 (default: inferred from the photo positions).")
+    geo.add_argument("--targets-orto", default=None,
+                     help="Folder (path or name inside the dataset) whose photos build a full-resolution orthophoto "
+                          "to locate the targets; only its GCP files are used (default: all photos and GCP files).")
+    geo.add_argument("--picks", default=None,
+                     help="Targets located on the orthophoto (picks.json from gcp/picker.html) to correct the "
+                          "georeference (default: <output>/gcp/picks.json if it exists).")
     geo.add_argument("--dense-min-opacity", default=None,
                      type=lambda v: v if v == "auto" else float(v),
                      help="Min Gaussian opacity (0-1) for points_dense.ply, or 'auto' (default, Otsu).")
@@ -106,7 +116,8 @@ def configs_from_args(
         max_image_size=a.max_image_size, matcher=a.matcher, mapper=a.mapper, camera_model=a.camera_model,
         max_num_features=a.max_features, single_camera=off(a.multi_camera), overwrite=on(a.overwrite_sfm),
         max_images=a.max_images, image_stride=a.image_stride, polygon=a.polygon, polygon_buffer=a.polygon_buffer,
-        image_list=a.image_list,
+        image_list=a.image_list, video_frames=a.frames_per_video,
+        ignore_folders=tuple(a.ignore_folder) if a.ignore_folder else None,
     )
     cli_train = dict(
         iterations=a.iterations, max_resolution=a.max_resolution, sh_degree=a.sh_degree,
@@ -118,7 +129,7 @@ def configs_from_args(
     cli_geo = dict(
         enabled=off(a.no_geo), crs=a.crs, ortho=off(a.no_ortho), fast_orto=off(a.no_fast_orto), gsd=a.gsd, gcps=a.gcps, gcps_crs=a.gcps_crs,
         positions=a.positions, positions_crs=a.positions_crs, gpx_time_offset=a.gpx_offset,
-        dense_min_opacity=a.dense_min_opacity,
+        dense_min_opacity=a.dense_min_opacity, targets_orto=a.targets_orto, picks=a.picks,
     )
 
     def merged(section: str, cli: dict) -> dict:

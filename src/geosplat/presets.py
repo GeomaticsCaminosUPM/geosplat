@@ -26,7 +26,7 @@ from .trainer import TrainConfig
 
 PRESETS: dict[str, dict[str, dict[str, Any]]] = {
     "very_fast": {
-        "sfm": {"max_image_size": 800, "max_num_features": 4096},
+        "sfm": {"max_image_size": 800, "max_num_features": 4096, "video_frames": 15},
         "train": {
             "iterations": 1000, "max_resolution": 800, "max_gaussians": 150_000, "sh_degree": 1,
             "sh_degree_interval": 300, "refine_start_iter": 200, "refine_every": 50,
@@ -34,17 +34,17 @@ PRESETS: dict[str, dict[str, dict[str, Any]]] = {
         "geo": {},
     },
     "fast": {
-        "sfm": {"max_image_size": 1200},
+        "sfm": {"max_image_size": 1200, "video_frames": 30},
         "train": {"iterations": 3000, "max_resolution": 1200, "max_gaussians": 500_000, "early_stop": True},
         "geo": {},
     },
     "medium": {
-        "sfm": {"max_image_size": 1600},
+        "sfm": {"max_image_size": 1600, "video_frames": 50},
         "train": {"iterations": 7000, "max_resolution": 1600},
         "geo": {},
     },
     "quality": {
-        "sfm": {"max_image_size": 2400},
+        "sfm": {"max_image_size": 2400, "video_frames": 100},
         "train": {"iterations": 30_000, "max_resolution": 1600},
         "geo": {},
     },

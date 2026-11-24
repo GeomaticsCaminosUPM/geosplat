@@ -50,6 +50,15 @@ class GeoConfig:
             to become a point of ``points_dense.ply``, or ``"auto"`` (default)
             to choose it with Otsu's method on the opacity histogram. Lower =
             more (noisier) points; higher = fewer, cleaner points.
+        targets_orto: Folder (absolute, or relative to the dataset folder) whose
+            photos build a high-resolution orthophoto for locating the targets
+            (``ortho_targets/``), e.g. a nadir flight flown for the targets. Its
+            GCP files are the only ones used. ``None``: all photos and all GCP
+            files. fast_orto and the final orthophoto always use all photos.
+        picks: JSON file with targets located on the orthophoto (saved by
+            ``gcp/picker.html`` or the notebook). ``None`` uses
+            ``<output>/gcp/picks.json`` if it exists. The picks correct the
+            georeference of every product.
     """
 
     enabled: bool = True
@@ -63,6 +72,8 @@ class GeoConfig:
     positions: str | Path | None = None
     positions_crs: str | None = None
     gpx_time_offset: float | None = None
+    targets_orto: str | Path | None = None
+    picks: str | Path | None = None
 
 
 @dataclass
@@ -319,10 +330,23 @@ def georeference(
     from pyproj import Transformer
 
     from .positions import photo_positions
+    from .sources import catalogue_key
 
     positions = positions if positions is not None else photo_positions(image_dir)
-    pairs = [(c.center, positions[Path(c.name).stem.lower()]) for c in scene.cameras
-             if Path(c.name).stem.lower() in positions]
+
+    def lookup(name: str) -> object | None:
+        """Position of a camera: by catalogue key (``group/name``), else by file stem.
+
+        Args:
+            name: Camera image name.
+
+        Returns:
+            The position or ``None``.
+        """
+        return positions.get(catalogue_key(name)) or positions.get(Path(name).stem.lower())
+
+    pairs = [(c.center, lookup(c.name)) for c in scene.cameras]
+    pairs = [(c, p) for c, p in pairs if p is not None]
     if len(pairs) < 3:
         logger.info("Georeferencing skipped: %d cameras with a known position", len(pairs))
         return None
@@ -383,10 +407,14 @@ def gravity_in_scene(geo: GeoReference) -> tuple[np.ndarray, np.ndarray]:
 
 
 def read_gcps(path: str | Path) -> dict[str, np.ndarray]:
-    """Read ground control points from a ``name,x,y,z`` text file.
+    """Read ground control points from a text file.
 
-    The delimiter (``,`` ``;`` tab or spaces) is detected automatically, and
-    header or other non-numeric lines are skipped.
+    Layouts: ``name,x,y,z``, ``id,x,y,z``, ``id,x,y,z,name`` (header optional).
+    A leading whole number followed by three more numbers is an ID; a text
+    column, if any, is the point name. The delimiter (``,`` ``;`` tab or spaces)
+    is detected automatically, and header or other non-numeric lines are skipped.
+    A header naming the columns (e.g. ``#Name Lat Lon Ell.H(m)`` or
+    ``id;este;norte;cota``) sets their order, so latitude-first files work.
 
     Args:
         path: CSV / text file path.
@@ -400,16 +428,63 @@ def read_gcps(path: str | Path) -> dict[str, np.ndarray]:
         rows = csv.reader(text.splitlines(), dialect)
     except csv.Error:
         rows = (line.replace(";", ",").replace("\t", ",").split(",") for line in text.splitlines())
+    from .positions import LAT_COLS, LON_COLS, X_COLS, Y_COLS, Z_COLS, norm_header
+
     gcps = {}
+    cols = None                                    # (name, x, y, z) indices from a header
     for row in rows:
-        row = [c.strip() for c in row if c.strip()]
-        if len(row) < 4:
+        cells = [c.strip() for c in row if c.strip()]
+        head = [norm_header(c) for c in cells]
+        find = lambda opts: next((i for i, h in enumerate(head) if h in opts), None)  # noqa: E731
+        ix, iy = find(LON_COLS) if find(LON_COLS) is not None else find(X_COLS), \
+            find(LAT_COLS) if find(LAT_COLS) is not None else find(Y_COLS)
+        if cols is None and ix is not None and iy is not None and all(_is_text(c) for c in cells):
+            iz = find(Z_COLS)
+            iname = next((i for i in range(len(cells)) if i not in (ix, iy, iz)), None)
+            cols = (iname, ix, iy, iz)
             continue
-        try:
-            gcps[row[0]] = np.array([float(v) for v in row[1:4]])
-        except ValueError:
+        if cols is not None:
+            iname, ix, iy, iz = cols
+            try:
+                x, y = float(cells[ix]), float(cells[iy])
+            except (IndexError, ValueError):
+                continue
+            z = float(cells[iz]) if iz is not None and iz < len(cells) and not _is_text(cells[iz]) else np.nan
+            name = cells[iname] if iname is not None and iname < len(cells) else str(len(gcps) + 1)
+            gcps[name] = np.array([x, y, z], dtype=np.float64)
+            continue
+        nums, texts = [], []
+        for c in cells:
+            try:
+                nums.append(float(c))
+            except ValueError:
+                texts.append(c)
+        if len(nums) < 3:
             continue  # header or comment line
+        first_is_id = len(nums) >= 4 and not texts[:1] == cells[:1] and float(cells[0]).is_integer()
+        xyz = nums[1:4] if first_is_id else nums[:3]
+        if texts:
+            name = texts[0]                        # e.g. "D1" in "D1,x,y,z" or "1,x,y,z,D1"
+        else:
+            name = cells[0] if first_is_id else str(len(gcps) + 1)
+        gcps[name] = np.array(xyz, dtype=np.float64)
     return gcps
+
+
+def _is_text(cell: str) -> bool:
+    """Whether a table cell is not a number.
+
+    Args:
+        cell: Cell text.
+
+    Returns:
+        ``True`` for non-numeric text.
+    """
+    try:
+        float(cell)
+        return False
+    except ValueError:
+        return True
 
 
 GCP_VECTOR_EXTENSIONS = (".gpkg", ".geojson", ".json", ".shp", ".gml", ".kml", ".fgb")
@@ -463,10 +538,9 @@ def _photo_lonlat(image_dir: str | Path, config: "GeoConfig | None" = None) -> n
     Returns:
         Array ``[N, 2]`` of ``(lon, lat)`` (empty if no photo has GPS).
     """
-    from .positions import photo_positions
+    from .sources import photo_positions_in
 
-    cfg = config or GeoConfig()
-    pos = photo_positions(image_dir, cfg.positions, cfg.positions_crs, cfg.gpx_time_offset).values()
+    pos = photo_positions_in(image_dir, config or GeoConfig()).values()
     return np.array([[p.lon, p.lat] for p in pos]).reshape(-1, 2)
 
 
@@ -522,39 +596,88 @@ def infer_gcp_crs(points: dict[str, np.ndarray], photo_lonlat: np.ndarray) -> tu
     return (best, best_score) if best_score >= 0.5 else (None, best_score)
 
 
-def find_gcp_file(image_dir: str | Path, min_points: int = 3) -> Path | None:
-    """Find a ground-control-point file next to the photos.
+def find_gcp_files(image_dir: str | Path, min_points: int = 3) -> list[Path]:
+    """Find every ground-control-point file of a dataset.
 
-    Vector files with a CRS (``.gpkg``, ``.geojson``, ``.shp``...) are preferred
-    over CSV / text files (``name,x,y,z``, header optional).
+    Looks at the dataset's side files (any subfolder that is not ignored, see
+    :func:`geosplat.sources.scan_dataset`) and at the folder of a plain photo
+    folder. Files that list photo positions are skipped. Vector files (with a
+    CRS) come first.
 
     Args:
-        image_dir: Folder with the photos.
-        min_points: Minimum number of valid points.
+        image_dir: Dataset folder or photo folder.
+        min_points: Minimum number of valid points per file.
 
     Returns:
-        Path of the first matching file, or ``None``.
+        GCP files (possibly empty).
     """
+    from .positions import is_positions_file
+    from .sources import scan_dataset
+
     image_dir = Path(image_dir)
     if not image_dir.is_dir():
-        return None
-    from .positions import is_positions_file
-
-    files = sorted(p for p in image_dir.iterdir() if p.suffix.lower() in GCP_VECTOR_EXTENSIONS)
-    files += sorted(p for p in image_dir.iterdir() if p.suffix.lower() in GCP_TEXT_EXTENSIONS)
-    for path in files:
+        return []
+    candidates = scan_dataset(image_dir).side_files
+    candidates = [p for p in candidates if p.suffix.lower() in GCP_VECTOR_EXTENSIONS + GCP_TEXT_EXTENSIONS]
+    candidates.sort(key=lambda p: (p.suffix.lower() not in GCP_VECTOR_EXTENSIONS, str(p).lower()))
+    found = []
+    for path in candidates:
         try:
             if is_positions_file(path, image_dir):        # photo positions (geo.txt...), not GCPs
                 continue
             if len(read_gcp_file(path)[0]) >= min_points:
-                logger.info("Ground control points found: %s", path.name)
-                return path
+                found.append(path)
         except Exception:  # noqa: BLE001 - unreadable / unrelated file
             continue
-    return None
+    if found:
+        logger.info("Ground control point files: %s", ", ".join(p.name for p in found))
+    return found
 
 
-def gcp_setup(image_dir: str | Path, config: GeoConfig) -> tuple[Path | None, str | None]:
+def find_gcp_file(image_dir: str | Path, min_points: int = 3) -> Path | None:
+    """First ground-control-point file of a dataset (see :func:`find_gcp_files`).
+
+    Args:
+        image_dir: Dataset folder or photo folder.
+        min_points: Minimum number of valid points.
+
+    Returns:
+        The file or ``None``.
+    """
+    files = find_gcp_files(image_dir, min_points)
+    return files[0] if files else None
+
+
+def read_gcp_files(paths: list[Path] | Path) -> tuple[dict[str, np.ndarray], str | None]:
+    """Read and merge several GCP files, dropping duplicate points.
+
+    Points closer than 1 mm (same file read twice, a copy in another folder, the
+    same targets with and without names...) are kept once, preferring a real
+    name (``D1``) over a number (``1``).
+
+    Args:
+        paths: GCP files (or a single file).
+
+    Returns:
+        Tuple ``(points, crs)``; ``crs`` is the first CRS found in vector files.
+    """
+    paths = [paths] if isinstance(paths, (str, Path)) else list(paths)
+    merged: dict[str, np.ndarray] = {}
+    crs = None
+    for path in paths:
+        points, file_crs = read_gcp_file(path)
+        crs = crs or file_crs
+        for name, xyz in points.items():
+            dup = next((n for n, v in merged.items() if np.allclose(v[:2], xyz[:2], atol=1e-3)
+                        and (np.isnan(v[2]) or np.isnan(xyz[2]) or abs(v[2] - xyz[2]) < 1e-3)), None)
+            if dup is None:
+                merged[name if name not in merged else f"{Path(path).stem}:{name}"] = xyz
+            elif dup.replace(".", "").isdigit() and not name.replace(".", "").isdigit():
+                merged[name] = merged.pop(dup)            # prefer the named version
+    return merged, crs
+
+
+def gcp_setup(image_dir: str | Path, config: GeoConfig) -> tuple[Path | list[Path] | None, str | None]:
     """Find the GCP file and its CRS, before georeferencing.
 
     The CRS is, in order: ``config.gcps_crs``, the file's own CRS (vector files),
@@ -563,36 +686,51 @@ def gcp_setup(image_dir: str | Path, config: GeoConfig) -> tuple[Path | None, st
     products are delivered in the survey's coordinate system.
 
     Args:
-        image_dir: Folder with the photos.
-        config: Georeferencing options; ``config.crs`` may be filled in.
+        image_dir: Folder with the photos (dataset root).
+        config: Georeferencing options; ``config.crs`` may be filled in. With
+            ``config.targets_orto``, only GCP files of that folder are used.
 
     Returns:
-        Tuple ``(gcp_file, gcp_crs)`` (``None`` values when there is no GCP file
-        or the CRS could not be determined).
+        Tuple ``(gcp_files, gcp_crs)``: one path, or a list when several GCP files
+        are merged (``None`` values when there is no GCP file or the CRS could not
+        be determined).
     """
     from pyproj import CRS
 
-    path = Path(config.gcps) if config.gcps else find_gcp_file(image_dir)
-    if path is None:
+    paths = [Path(config.gcps)] if config.gcps else []
+    if not paths and config.targets_orto:
+        from .sources import resolve_subfolder
+
+        folder = resolve_subfolder(image_dir, config.targets_orto)
+        paths = find_gcp_files(folder)
+        if paths:
+            logger.info("GCPs from the targets flight only: %s", [p.name for p in paths])
+        else:
+            logger.warning("No GCP file in %s; using every GCP file of the dataset.", folder)
+    if not paths:
+        paths = find_gcp_files(image_dir)
+    if not paths:
         return None, None
-    points, file_crs = read_gcp_file(path)
+    points, file_crs = read_gcp_files(paths)
     crs = config.gcps_crs or file_crs
     if crs is None:
         crs, score = infer_gcp_crs(points, _photo_lonlat(image_dir, config))
         if crs:
             logger.info("GCP CRS inferred as %s (%.0f %% of points inside the photographed area)", crs, 100 * score)
         else:
-            logger.warning("Could not infer the CRS of %s; set it explicitly (gcps_crs / GCPS_CRS).", path.name)
+            logger.warning("Could not infer the CRS of the GCPs; set it explicitly (gcps_crs / GCPS_CRS).")
     if crs and config.crs is None and CRS.from_user_input(crs).is_projected:
         config.crs = CRS.from_user_input(crs).to_string()
-    return path, crs
+    return (paths[0] if len(paths) == 1 else paths), crs
 
 
-def load_gcps(path: str | Path, target_crs: str | None, gcp_crs: str | None = None) -> dict[str, np.ndarray]:
+def load_gcps(
+    path: str | Path | list[Path], target_crs: str | None, gcp_crs: str | None = None
+) -> dict[str, np.ndarray]:
     """Read a GCP file and convert its coordinates to the output CRS.
 
     Args:
-        path: GCP file (CSV or vector).
+        path: GCP file (CSV or vector), or several files to merge (duplicates removed).
         target_crs: CRS of the georeference (``geo.crs``).
         gcp_crs: CRS of the file's coordinates (from :func:`gcp_setup`); ``None``
             assumes they are already in ``target_crs``.
@@ -602,7 +740,7 @@ def load_gcps(path: str | Path, target_crs: str | None, gcp_crs: str | None = No
     """
     from pyproj import CRS, Transformer
 
-    points, file_crs = read_gcp_file(path)
+    points, file_crs = read_gcp_files(path)
     src = gcp_crs or file_crs
     if not points or src is None or target_crs is None or CRS.from_user_input(src) == CRS.from_user_input(target_crs):
         return points

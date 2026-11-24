@@ -72,8 +72,8 @@ def filter_by_polygon(images: list[Path], polygon_path: str | Path, buffer_m: fl
 
     poly, crs = read_polygon(polygon_path)
     crs = CRS.from_user_input(crs) if crs else CRS.from_epsg(4326)
-    positions = photo_positions(images[0].parent) if images else {}
-    gps = {p: position_of(p, positions) for p in images}
+    by_folder = {f: photo_positions(f) for f in {p.parent for p in images}}
+    gps = {p: position_of(p, by_folder[p.parent]) for p in images}
     with_gps = [p for p, g in gps.items() if g is not None]
     if not with_gps:
         raise ValueError("Polygon filtering needs photo positions (GPS EXIF or a positions file), but none were found.")

@@ -113,21 +113,17 @@ def opacity_sliders(m: object, overlay: object | None = None) -> object:
 
 
 def photo_locations(image_dir: str | Path) -> list[tuple[Path, float, float]]:
-    """Positions of the photos in a folder (EXIF, sidecars or external files, see :mod:`geosplat.positions`).
+    """Positions of the photos of a dataset (all subfolders; EXIF, sidecars or external files).
 
     Args:
-        image_dir: Folder with images.
+        image_dir: Dataset folder or photo folder.
 
     Returns:
         List of ``(path, latitude, longitude)`` for photos with a known position.
     """
-    positions = photo_positions(image_dir)
-    out = []
-    for p in list_images(image_dir):
-        pos = position_of(p, positions)
-        if pos is not None:
-            out.append((p, pos.lat, pos.lon))
-    return out
+    from .sources import photo_positions_in
+
+    return [(p, pos.lat, pos.lon) for p, pos in photo_positions_in(image_dir).items()]
 
 
 def _offset(lat: float, lon: float, east_m: float, north_m: float) -> tuple[float, float]:
@@ -251,14 +247,17 @@ class PhotoSelector:
         import ipywidgets as widgets
         from ipyleaflet import DrawControl, LayerGroup, Map, Marker, ScaleControl
 
+        self.root = Path(image_dir).resolve()
         self.photos = photo_locations(image_dir)
         if not self.photos:
             raise ValueError("No GPS-tagged photos to show.")
         self.selection_file = Path(selection_file) if selection_file else None
         self.included = np.ones(len(self.photos), dtype=bool)
         if self.selection_file and self.selection_file.exists():
-            names = set(self.selection_file.read_text().split())
-            self.included = np.array([p.name in names for p, _, _ in self.photos])
+            names = {ln.strip().lower() for ln in self.selection_file.read_text().splitlines() if ln.strip()}
+            self.included = np.array([p.name.lower() in names
+                                      or str(p.resolve().relative_to(self.root)).replace("\\", "/").lower() in names
+                                      for p, _, _ in self.photos])
 
         lats = np.array([p[1] for p in self.photos])
         lons = np.array([p[2] for p in self.photos])
@@ -363,6 +362,15 @@ class PhotoSelector:
         return [p for (p, _, _), ok in zip(self.photos, self.included) if ok]
 
     @property
+    def selected_names(self) -> list[str]:
+        """Included photos as paths relative to the dataset folder (usable as ``image_list``).
+
+        Returns:
+            Relative paths with ``/`` separators.
+        """
+        return [str(p.resolve().relative_to(self.root)).replace("\\", "/") for p in self.selected]
+
+    @property
     def all_selected(self) -> bool:
         """Whether every photo is included.
 
@@ -382,7 +390,7 @@ class PhotoSelector:
         """
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("\n".join(p.name for p in self.selected) + "\n")
+        path.write_text("\n".join(self.selected_names) + "\n")
         return path
 
     def _ipython_display_(self) -> None:

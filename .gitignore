@@ -27,3 +27,12 @@ examples/**/*.[tT][iI][fF]
 examples/**/*.[tT][iI][fF][fF]
 examples/drone2024/instructions
 examples/drone2024/instructions/*
+
+# Videos of every example dataset
+examples/**/*.[mM][oO][vV]
+examples/**/*.[mM][pP]4
+examples/**/*.[aA][vV][iI]
+examples/**/*.[mM][kK][vV]
+
+# Private survey datasets (photos, videos, logs, targets)
+examples/droneNov2026/

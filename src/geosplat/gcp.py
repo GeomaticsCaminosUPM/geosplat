@@ -29,6 +29,10 @@ class GCPPicker:
         picks_file: Optional JSON file where picks are saved on every change
             (and loaded from, if it exists).
         height: Map height (CSS).
+        geo: Georeference the orthophoto was made with. With ``dsm_tif``, picks
+            are saved in the ``picker.html`` format (with heights), so
+            ``examples/run.py`` can apply them too.
+        dsm_tif: DSM made with ``geo``.
     """
 
     def __init__(
@@ -37,6 +41,8 @@ class GCPPicker:
         gcps: dict[str, np.ndarray],
         picks_file: str | Path | None = None,
         height: str = "600px",
+        geo: GeoReference | None = None,
+        dsm_tif: str | Path | None = None,
     ) -> None:
         """Build the picking widget.
 
@@ -45,6 +51,8 @@ class GCPPicker:
             gcps: Ground control points in the orthophoto's CRS.
             picks_file: Optional JSON file for persisting picks.
             height: Map height (CSS).
+            geo: Georeference of the orthophoto (saved with the picks).
+            dsm_tif: DSM made with ``geo`` (heights saved with the picks).
         """
         import ipywidgets as widgets
         import rasterio
@@ -56,6 +64,7 @@ class GCPPicker:
         self.gcps = dict(gcps)
         self.names = list(self.gcps)
         self.picks_file = Path(picks_file) if picks_file else None
+        self.geo, self.dsm_tif = geo, dsm_tif
         with rasterio.open(ortho_tif) as src:
             self.crs = src.crs
         to_ll = Transformer.from_crs(self.crs, "EPSG:4326", always_xy=True)
@@ -94,9 +103,9 @@ class GCPPicker:
         self.widget = widgets.VBox([help_text, widgets.HBox([self.name_select, delete_btn, clear_btn]),
                                     self.map, opacity_sliders(self.map, overlay), self.table])
         if self.picks_file and self.picks_file.exists():
-            for name, (lat, lon) in json.loads(self.picks_file.read_text()).items():
+            for name, v in load_picks(self.picks_file).items():
                 if name in self.gcps:
-                    self._place(name, (lat, lon))
+                    self._place(name, (v[0], v[1]))
         self._refresh()
 
     def _marker_icon(self, name: str) -> object:
@@ -165,7 +174,32 @@ class GCPPicker:
                             f"<table><tr><th>name</th><th>placed</th><th>x</th><th>y</th><th>z</th></tr>{rows}</table>")
         if self.picks_file:
             self.picks_file.parent.mkdir(parents=True, exist_ok=True)
-            self.picks_file.write_text(json.dumps(self.picks, indent=2))
+            self.picks_file.write_text(json.dumps(self._payload(), indent=2))
+
+    def _payload(self) -> dict:
+        """Picks to save: ``picker.html`` format if the georeference and DSM are known.
+
+        Returns:
+            ``{"picks": {name: [lat, lon, h]}, "geo": {...}}`` or ``{name: [lat, lon]}``.
+        """
+        if self.geo is None or self.dsm_tif is None or not self.markers:
+            return {n: list(v) for n, v in self.picks.items()}
+        import rasterio
+        from pyproj import Transformer
+
+        to_crs = Transformer.from_crs("EPSG:4326", self.geo.crs, always_xy=True)
+        names = list(self.picks)
+        e, n_ = to_crs.transform([self.picks[k][1] for k in names], [self.picks[k][0] for k in names])
+        with rasterio.open(self.dsm_tif) as dsm:
+            h = [float(v[0]) for v in dsm.sample(list(zip(e, n_)))]
+            nodata = dsm.nodata
+        good = [v for v in h if v != nodata and np.isfinite(v)]
+        fill = float(np.median(good)) if good else 0.0
+        h = [v if (v != nodata and np.isfinite(v)) else fill for v in h]
+        g = self.geo
+        return {"picks": {k: [*self.picks[k], h[i]] for i, k in enumerate(names)},
+                "geo": {"crs": g.crs, "origin": g.origin.tolist(), "scene_to_geo": g.scene_to_geo.tolist(),
+                        "rmse_m": g.rmse, "num_cameras": g.num_cameras}}
 
     @property
     def picks(self) -> dict[str, tuple[float, float]]:
@@ -183,23 +217,25 @@ class GCPPicker:
         display(self.widget)
 
 
-def load_picks(path: str | Path) -> dict[str, tuple[float, float]]:
-    """Load picks saved by :class:`GCPPicker`.
+def load_picks(path: str | Path) -> dict[str, tuple[float, ...]]:
+    """Load picks saved by :class:`GCPPicker` or by ``gcp/picker.html``.
 
     Args:
         path: JSON file.
 
     Returns:
-        ``{name: (lat, lon)}``.
+        ``{name: (lat, lon)}`` (notebook) or ``{name: (lat, lon, height)}`` (page).
     """
-    return {k: tuple(v) for k, v in json.loads(Path(path).read_text()).items()}
+    from .picker_html import picks_heights
+
+    return picks_heights(json.loads(Path(path).read_text()))
 
 
 def refine_georeference(
     geo: GeoReference,
-    picks: dict[str, tuple[float, float]],
+    picks: dict[str, tuple[float, ...]],
     gcps: dict[str, np.ndarray],
-    dsm_tif: str | Path,
+    dsm_tif: str | Path | None,
 ) -> tuple[GeoReference, dict[str, object]]:
     """Correct a GPS-based georeference with ground control points picked on the orthophoto.
 
@@ -210,9 +246,12 @@ def refine_georeference(
 
     Args:
         geo: Current georeference (from photo GPS).
-        picks: ``{name: (lat, lon)}`` from :class:`GCPPicker`.
+        picks: ``{name: (lat, lon)}`` from :class:`GCPPicker`, or
+            ``{name: (lat, lon, height)}`` from ``picker.html`` (height already
+            known, no DSM needed).
         gcps: ``{name: [x, y, z]}`` in ``geo.crs``.
-        dsm_tif: DSM GeoTIFF made with ``geo`` (``ortho/dsm.tif`` or ``fast_orto/dsm_sparse.tif``).
+        dsm_tif: DSM GeoTIFF made with ``geo`` (``ortho/dsm.tif`` or
+            ``fast_orto/dsm_sparse.tif``); only used for picks without height.
 
     Returns:
         Tuple ``(new_geo, report)``; ``report`` has per-point residuals (m), RMSE,
@@ -229,9 +268,15 @@ def refine_georeference(
         raise ValueError("No picked point matches a GCP name.")
     to_crs = Transformer.from_crs("EPSG:4326", geo.crs, always_xy=True)
     east, north = to_crs.transform([picks[n][1] for n in names], [picks[n][0] for n in names])
-    with rasterio.open(dsm_tif) as dsm:
-        heights = np.array([v[0] for v in dsm.sample(list(zip(east, north)))], dtype=np.float64)
-        nodata = dsm.nodata
+    heights = np.array([picks[n][2] if len(picks[n]) > 2 else np.nan for n in names], dtype=np.float64)
+    nodata = None
+    if np.isnan(heights).any():
+        if dsm_tif is None:
+            raise ValueError("Picks without height need a DSM.")
+        with rasterio.open(dsm_tif) as dsm:
+            sampled = np.array([v[0] for v in dsm.sample(list(zip(east, north)))], dtype=np.float64)
+            nodata = dsm.nodata
+        heights = np.where(np.isnan(heights), sampled, heights)
     if nodata is not None and np.any(heights == nodata):
         valid = heights[heights != nodata]
         heights[heights == nodata] = np.median(valid) if len(valid) else 0.0
@@ -255,6 +300,7 @@ def refine_georeference(
         "rmse_z_m": float(np.sqrt((res[:, 2] ** 2).mean())),
         "shift_before_m": {n: [round(float(v), 3) for v in d] for n, d in zip(names, dst - src)},
         "scale_change": float(np.cbrt(np.linalg.det(C[:3, :3]))),
+        "picked_xyz_corrected": {n: [float(v) for v in f + geo.origin] for n, f in zip(names, fitted)},
     }
     new_geo = GeoReference(
         geo.crs, geo.origin.copy(), C @ geo.scene_to_geo, report["rmse_xy_m"], geo.num_cameras,  # type: ignore[arg-type]

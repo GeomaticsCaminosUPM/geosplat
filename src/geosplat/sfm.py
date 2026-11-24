@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import shutil
 from dataclasses import dataclass
@@ -47,8 +48,12 @@ class SfMConfig:
         polygon: Vector file (``.gpkg``, ``.shp``, ``.geojson``...) with an area
             of interest; only GPS-tagged images taken inside it are used.
         polygon_buffer: Grow the polygon by this many meters before filtering.
-        image_list: Only use these photos: a list of file names, or a text file
-            with one name per line (e.g. saved by the notebook photo map).
+        image_list: Only use these photos: a list of file names (or paths relative
+            to the dataset folder), or a text file with one per line (e.g. saved by
+            the notebook photo map).
+        video_frames: Frames extracted from each video found in the dataset.
+        ignore_folders: Extra folder-name patterns to skip when scanning the
+            dataset (``ignore``, ``results``, ``output*``... are always skipped).
     """
 
     max_image_size: int = 1600
@@ -66,6 +71,8 @@ class SfMConfig:
     polygon: str | Path | None = None
     polygon_buffer: float = 0.0
     image_list: list[str] | str | Path | None = None
+    video_frames: int = 50
+    ignore_folders: tuple[str, ...] = ()
 
 
 def select_images(image_dir: str | Path, config: SfMConfig) -> list[Path]:
@@ -83,18 +90,22 @@ def select_images(image_dir: str | Path, config: SfMConfig) -> list[Path]:
     """
     from .selection import filter_by_polygon, subsample
 
-    images = list_images(image_dir)
+    from .sources import scan_dataset
+
+    root = Path(image_dir).resolve()
+    images = scan_dataset(root, config.ignore_folders).photos
     if config.image_list is not None:
         names = config.image_list
         if isinstance(names, (str, Path)):
-            names = Path(names).read_text().split()
-        wanted = {Path(n).name for n in names}
-        images = [p for p in images if p.name in wanted]
+            names = [ln.strip() for ln in Path(names).read_text().splitlines() if ln.strip()]
+        wanted = {str(n).replace("\\", "/").lower() for n in names}
+        images = [p for p in images
+                  if p.name.lower() in wanted or str(p.relative_to(root)).replace("\\", "/").lower() in wanted]
         logger.info("Image list: %d photos selected", len(images))
     if config.polygon:
         images = filter_by_polygon(images, config.polygon, config.polygon_buffer)
     images = subsample(images, config.max_images, config.image_stride)
-    if len(images) < 2:
+    if len(images) < 2 and not scan_dataset(root, config.ignore_folders).videos:
         raise ValueError(f"Only {len(images)} image(s) selected; need at least 2.")
     return images
 
@@ -120,6 +131,18 @@ def list_images(image_dir: str | Path) -> list[Path]:
     return images
 
 
+def prepared_name(src: Path) -> str:
+    """File name a photo gets when prepared for SfM.
+
+    Args:
+        src: Original photo.
+
+    Returns:
+        Prepared file name (JPEG, or PNG for lossless inputs).
+    """
+    return src.stem + (".png" if src.suffix.lower() in {".png", ".tif", ".tiff", ".bmp"} else ".jpg")
+
+
 def prepare_images(image_dir: str | Path | list[Path], out_dir: str | Path, max_image_size: int) -> Path:
     """Copy images to ``out_dir``, applying EXIF rotation and optional downscaling.
 
@@ -129,13 +152,13 @@ def prepare_images(image_dir: str | Path | list[Path], out_dir: str | Path, max_
         max_image_size: Maximum longest side in pixels (``0`` disables resizing).
 
     Returns:
-        The destination folder.
+        The destination folder (file names: :func:`prepared_name`).
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     sources = image_dir if isinstance(image_dir, list) else list_images(image_dir)
     for src in sources:
-        dst = out_dir / (src.stem + (".png" if src.suffix.lower() in {".png", ".tif", ".tiff", ".bmp"} else ".jpg"))
+        dst = out_dir / prepared_name(src)
         if dst.exists():
             continue
         with Image.open(src) as im:
@@ -192,26 +215,57 @@ def run_sfm(image_dir: str | Path, work_dir: str | Path, config: SfMConfig | Non
     Raises:
         RuntimeError: If no reconstruction could be computed.
     """
+    from .sources import extract_frames, group_slug, scan_dataset, _srt_for
+
     config = config or SfMConfig()
     work_dir = Path(work_dir)
     undistorted = work_dir / "undistorted"
-    selected = select_images(image_dir, config)
-    signature = "\n".join([f"max_image_size={config.max_image_size}"] + [p.name for p in selected])
+    root = Path(image_dir).resolve()
+    dataset = scan_dataset(root, config.ignore_folders)
+    selected = select_images(root, config)
+    videos = dataset.videos if config.video_frames > 0 else []
+    signature = "\n".join([f"max_image_size={config.max_image_size}", f"video_frames={config.video_frames}"]
+                          + [str(p.relative_to(root)) for p in selected] + [str(v.relative_to(root)) for v in videos])
     sig_file = work_dir / "selection.txt"
     same = sig_file.exists() and sig_file.read_text() == signature
     if (undistorted / "sparse").exists() and same and not config.overwrite:
         logger.info("Reusing existing SfM result in %s", undistorted)
         return undistorted
     if work_dir.exists() and (config.overwrite or not same):
-        for sub in ("images", "database.db", "sparse", "undistorted"):
+        for sub in ("images", "database.db", "sparse", "undistorted", "catalogue.json"):
             p = work_dir / sub
             shutil.rmtree(p, ignore_errors=True) if p.is_dir() else p.unlink(missing_ok=True)
     work_dir.mkdir(parents=True, exist_ok=True)
 
-    images = prepare_images(selected, work_dir / "images", config.max_image_size)
+    images = work_dir / "images"
+    flat = dataset.flat and not videos
+    catalogue: dict[str, dict] = {}
+    if flat:                                       # classic layout: one folder, one camera
+        prepare_images(selected, images, config.max_image_size)
+        for p in selected:
+            catalogue[prepared_name(p)] = {"source": str(p), "kind": "photo", "group": "."}
+    else:                                          # one subfolder (and one camera) per photo folder / video
+        chosen_set = set(selected)
+        for g in dataset.groups:
+            chosen = [p for p in g.photos if p in chosen_set]
+            if not chosen:
+                continue
+            slug = group_slug(g.label)
+            prepare_images(chosen, images / slug, config.max_image_size)
+            for p in chosen:
+                catalogue[f"{slug}/{prepared_name(p)}"] = {"source": str(p), "kind": "photo", "group": g.label}
+        for v in videos:
+            slug = "video_" + group_slug(str(v.relative_to(root).with_suffix("")))
+            logger.info("Extracting %d frames from %s", config.video_frames, v.name)
+            srt = _srt_for(v, dataset.side_files)
+            for frame, t in extract_frames(v, images / slug, config.video_frames, config.max_image_size):
+                catalogue[f"{slug}/{frame.name}"] = {"source": str(v), "kind": "video_frame", "time": t,
+                                                     "group": str(v.relative_to(root)), "srt": str(srt) if srt else None}
+    (work_dir / "catalogue.json").write_text(json.dumps(
+        {"root": str(root), "images": catalogue, "side_files": [str(p) for p in dataset.side_files]}, indent=1))
     sig_file.write_text(signature)
-    n_images = len(list_images(images))
-    logger.info("SfM on %d images", n_images)
+    n_images = len(catalogue)
+    logger.info("SfM on %d images (%s)", n_images, dataset.summary())
 
     database = work_dir / "database.db"
     database.unlink(missing_ok=True)
@@ -224,7 +278,10 @@ def run_sfm(image_dir: str | Path, work_dir: str | Path, config: SfMConfig | Non
     extraction = pycolmap.FeatureExtractionOptions()
     extraction.max_image_size = max(config.max_image_size, 0) or 3200
     extraction.sift.max_num_features = config.max_num_features
-    camera_mode = pycolmap.CameraMode.SINGLE if config.single_camera else pycolmap.CameraMode.AUTO
+    if not flat:
+        camera_mode = pycolmap.CameraMode.PER_FOLDER   # each photo folder / video has its own camera
+    else:
+        camera_mode = pycolmap.CameraMode.SINGLE if config.single_camera else pycolmap.CameraMode.AUTO
     logger.info("Extracting features...")
     pycolmap.extract_features(
         database, images, camera_mode=camera_mode, reader_options=reader,
@@ -235,7 +292,9 @@ def run_sfm(image_dir: str | Path, work_dir: str | Path, config: SfMConfig | Non
     if matcher == "auto":
         from .geo import read_gps
 
-        matcher = "spatial" if sum(read_gps(p) is not None for p in selected) >= 3 else "exhaustive"
+        # Spatial matching only pairs images with GPS in their EXIF: use it only if all have it.
+        with_gps = sum(e["kind"] == "photo" and read_gps(e["source"]) is not None for e in catalogue.values())
+        matcher = "spatial" if with_gps == n_images and n_images >= 3 else "exhaustive"
     logger.info("Matching features (%s)...", matcher)
     if matcher == "spatial":
         pairing = pycolmap.SpatialPairingOptions()

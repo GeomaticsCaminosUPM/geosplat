@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import io
 import logging
+import math
 import shutil
 import tempfile
 import urllib.request
@@ -15,6 +17,10 @@ logger = logging.getLogger("geosplat")
 
 SOUTH_BUILDING_URL = "https://github.com/colmap/colmap/releases/download/3.11.1/south-building.zip"
 SENECA_API = "https://api.github.com/repos/OpenDroneMap/odm_data_seneca/contents/images"
+# Agisoft Metashape sample "Aerial images with GCPs" (data by GeoScan): 444 nadir photos (Sony RX1R),
+# camera positions and 17 surveyed ground control points, WGS84 / ellipsoidal heights.
+AERIAL_GCPS_URL = "https://download.agisoft.com/datasets/aerial_images_with_gcps.zip"
+AERIAL_GCPS_BLOCK = ("4", "5", "9")      # GCPs at the centre of the downloaded photo block
 
 
 def download_file(url: str, dest: str | Path) -> Path:
@@ -115,10 +121,12 @@ PHOTO_EXTENSIONS = (".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp")
 
 
 def unzip_images(zip_path: str | Path, out_dir: str | Path | None = None) -> Path:
-    """Extract the photos (and CSV files, e.g. GCPs) of a zip into a flat folder.
+    """Extract a zip of photos (and videos, positions / GCP files), keeping its folders.
 
-    Subfolders are flattened; ``__MACOSX`` and hidden files are skipped. If the
-    output folder already contains photos, nothing is extracted again.
+    The folder structure is kept (several flights stay separate); a single
+    top-level folder wrapping everything is dropped. ``__MACOSX`` and hidden
+    files are skipped, and nothing is extracted again if the destination already
+    has content.
 
     Args:
         zip_path: Zip archive.
@@ -126,30 +134,32 @@ def unzip_images(zip_path: str | Path, out_dir: str | Path | None = None) -> Pat
             zip is called ``images.zip``, otherwise a folder named like the zip.
 
     Returns:
-        The folder with the photos.
+        The extracted dataset folder.
     """
+    from .sources import SIDE_EXTENSIONS, VIDEO_EXTENSIONS
+
     zip_path = Path(zip_path)
     if out_dir is None:
         out_dir = zip_path.parent / ("images" if zip_path.stem.lower() == "images" else zip_path.stem)
     out_dir = Path(out_dir)
-    if out_dir.is_dir() and any(p.suffix.lower() in PHOTO_EXTENSIONS for p in out_dir.iterdir()):
+    if out_dir.is_dir() and any(out_dir.iterdir()):
         return out_dir
     out_dir.mkdir(parents=True, exist_ok=True)
-    count = 0
+    keep = set(PHOTO_EXTENSIONS) | VIDEO_EXTENSIONS | SIDE_EXTENSIONS
     with zipfile.ZipFile(zip_path) as zf:
-        for info in zf.infolist():
-            parts = Path(info.filename).parts
-            if info.is_dir() or "__MACOSX" in parts or any(p.startswith(".") for p in parts):
-                continue
-            if Path(info.filename).suffix.lower() not in PHOTO_EXTENSIONS + (".csv", ".txt"):
-                continue
-            target = out_dir / Path(info.filename).name
-            if target.exists():  # same name in another subfolder
-                target = out_dir / f"{Path(info.filename).parent.name}_{Path(info.filename).name}"
+        members = [i for i in zf.infolist() if not i.is_dir()
+                   and "__MACOSX" not in Path(i.filename).parts
+                   and not any(p.startswith(".") for p in Path(i.filename).parts)
+                   and Path(i.filename).suffix.lower() in keep]
+        tops = {Path(i.filename).parts[0] for i in members}
+        strip = len(tops) == 1 and all(len(Path(i.filename).parts) > 1 for i in members)
+        for info in members:
+            parts = Path(info.filename).parts[1:] if strip else Path(info.filename).parts
+            target = out_dir.joinpath(*parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
             with zf.open(info) as src, open(target, "wb") as dst:
                 shutil.copyfileobj(src, dst)
-            count += 1
-    logger.info("Extracted %d files from %s to %s", count, zip_path.name, out_dir)
+    logger.info("Extracted %d files from %s to %s", len(members), zip_path.name, out_dir)
     return out_dir
 
 
@@ -172,16 +182,138 @@ def resolve_image_source(path: str | Path) -> Path:
     if path.is_dir():
         if (path / "images").is_dir():
             return resolve_image_source(path / "images")
-        has_photos = any(p.suffix.lower() in PHOTO_EXTENSIONS for p in path.iterdir())
+        from .sources import scan_dataset
+
+        has_content = bool(scan_dataset(path).photos or scan_dataset(path).videos)
         zips = sorted(path.glob("*.zip")) + sorted(path.glob("*.ZIP"))
-        if not has_photos and len(zips) == 1:
+        if not has_content and len(zips) == 1:
             return unzip_images(zips[0], path if path.name == "images" else path / "images")
     elif path.with_suffix(".zip").is_file():  # "flight" given, "flight.zip" exists
         return unzip_images(path.with_suffix(".zip"), path)
     return path
 
 
-SAMPLES = {"seneca": download_seneca, "south_building": download_south_building}
+class _RemoteFile(io.RawIOBase):
+    """Read-only, seekable view of a URL through HTTP range requests (to read single files of a large zip)."""
+
+    def __init__(self, url: str) -> None:
+        """Open the URL.
+
+        Args:
+            url: File URL; the server must support ``Range`` requests.
+        """
+        self.url, self.pos = url, 0
+        with urllib.request.urlopen(urllib.request.Request(url, method="HEAD")) as resp:
+            self.size = int(resp.headers["Content-Length"])
+
+    def readable(self) -> bool:
+        """File is readable.
+
+        Returns:
+            ``True``.
+        """
+        return True
+
+    def seekable(self) -> bool:
+        """File is seekable.
+
+        Returns:
+            ``True``.
+        """
+        return True
+
+    def tell(self) -> int:
+        """Current position.
+
+        Returns:
+            Byte offset.
+        """
+        return self.pos
+
+    def seek(self, offset: int, whence: int = 0) -> int:
+        """Move the read position.
+
+        Args:
+            offset: Byte offset.
+            whence: 0 = from start, 1 = from current, 2 = from end.
+
+        Returns:
+            New position.
+        """
+        self.pos = offset if whence == 0 else self.pos + offset if whence == 1 else self.size + offset
+        return self.pos
+
+    def readinto(self, buf: bytearray) -> int:
+        """Read bytes at the current position.
+
+        Args:
+            buf: Buffer to fill.
+
+        Returns:
+            Number of bytes read.
+        """
+        n = min(len(buf), self.size - self.pos)
+        if n <= 0:
+            return 0
+        req = urllib.request.Request(self.url, headers={"Range": f"bytes={self.pos}-{self.pos + n - 1}"})
+        with urllib.request.urlopen(req) as resp:
+            data = resp.read()
+        buf[: len(data)] = data
+        self.pos += len(data)
+        return len(data)
+
+
+def download_aerial_gcps(images_dir: str | Path, num_images: int | None = 40) -> Path:
+    """Download a block of the Agisoft "Aerial images with GCPs" sample (data by GeoScan).
+
+    Only the needed files are read from the 15 GB zip (HTTP range requests):
+    the ``num_images`` photos nearest to GCPs 4, 5 and 9 (about 11 MB each),
+    the camera positions table ``Cameras_WGS84.txt`` (the photos have no GPS
+    EXIF) and ``GCPs_WGS84.txt`` with the GCPs inside the block.
+
+    Args:
+        images_dir: Destination folder.
+        num_images: Number of photos (``None``: 40).
+
+    Returns:
+        ``images_dir``.
+    """
+    images_dir = Path(images_dir)
+    num_images = num_images or 40
+    if len(list(images_dir.glob("*.JPG"))) >= num_images:
+        return images_dir
+    images_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("Reading the index of %s", AERIAL_GCPS_URL)
+    z = zipfile.ZipFile(io.BufferedReader(_RemoteFile(AERIAL_GCPS_URL), 1 << 20))
+    base = "aerial_images_with_gcps/"
+    cams_txt = z.read(base + "Metadata/Cameras_WGS84.txt").decode("utf-8", "replace")
+    gcps_txt = z.read(base + "Metadata/GCPs_WGS84.txt").decode("utf-8", "replace")
+    rows = [ln.split("\t") for ln in cams_txt.splitlines() if ln.strip() and not ln.startswith("#")]
+    cams = {r[0].strip(): (float(r[1]), float(r[2])) for r in rows}
+    gcps = {r[0].strip(): (float(r[1]), float(r[2]))
+            for r in (ln.split("\t") for ln in gcps_txt.splitlines() if ln.strip() and not ln.startswith("#"))}
+    lat0 = sum(gcps[g][0] for g in AERIAL_GCPS_BLOCK) / len(AERIAL_GCPS_BLOCK)
+    lon0 = sum(gcps[g][1] for g in AERIAL_GCPS_BLOCK) / len(AERIAL_GCPS_BLOCK)
+    k = math.cos(math.radians(lat0))
+    in_zip = {Path(i.filename).name for i in z.infolist()}
+    names = sorted((n for n in cams if n in in_zip),
+                   key=lambda n: math.hypot(cams[n][0] - lat0, (cams[n][1] - lon0) * k))[:num_images]
+    lats = [cams[n][0] for n in names]
+    lons = [cams[n][1] for n in names]
+    keep = [g for g, (la, lo) in gcps.items() if min(lats) <= la <= max(lats) and min(lons) <= lo <= max(lons)]
+    (images_dir / "Cameras_WGS84.txt").write_text(cams_txt)
+    header = next(ln for ln in gcps_txt.splitlines() if ln.startswith("#"))
+    body = [ln for ln in gcps_txt.splitlines() if ln.split("\t")[0].strip() in keep]
+    (images_dir / "GCPs_WGS84.txt").write_text("\n".join([header, *body]) + "\n")
+    for n in tqdm(names, desc="aerial_gcps photos"):
+        if not (images_dir / n).is_file():
+            with z.open(base + "Images/" + n) as src, open(images_dir / n, "wb") as dst:
+                shutil.copyfileobj(src, dst, 1 << 20)
+    logger.info("Downloaded %d photos and GCPs %s to %s", len(names), keep, images_dir)
+    return images_dir
+
+
+SAMPLES = {"seneca": download_seneca, "south_building": download_south_building, "aerial_gcps": download_aerial_gcps}
 
 
 def prepare_images(source: str | Path, examples_dir: str | Path = "examples", num_images: int = 40) -> Path:
@@ -189,7 +321,8 @@ def prepare_images(source: str | Path, examples_dir: str | Path = "examples", nu
 
     ``source`` may be a folder of photos, a dataset folder with ``images/``, a
     ``.zip`` of photos (extracted next to it), or the name of a public sample
-    (``"seneca"``: drone flight with GPS; ``"south_building"``: hand-held photos),
+    (``"seneca"``: drone flight with GPS; ``"south_building"``: hand-held photos;
+    ``"aerial_gcps"``: survey flight with a positions file and ground control points),
     which is downloaded into ``<examples_dir>/<name>/images`` on first use.
 
     Args:

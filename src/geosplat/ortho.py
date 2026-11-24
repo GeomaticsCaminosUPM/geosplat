@@ -68,14 +68,36 @@ class OrthoGrid:
         return e[None].expand(self.height, -1), n[:, None].expand(-1, self.width)
 
 
+def _near_cameras(pts: np.ndarray, cams: np.ndarray, reach: float) -> np.ndarray:
+    """Mask of points whose horizontal distance to the nearest camera is at most ``reach``.
+
+    Args:
+        pts: Points ``[N, 3]`` (local geo coordinates).
+        cams: Camera centers ``[M, 3]``.
+        reach: Maximum horizontal distance in meters.
+
+    Returns:
+        Boolean mask ``[N]``.
+    """
+    keep = np.zeros(len(pts), dtype=bool)
+    for s0 in range(0, len(pts), 20_000):
+        d = np.linalg.norm(pts[s0 : s0 + 20_000, None, :2] - cams[None, :, :2], axis=-1).min(1)
+        keep[s0 : s0 + 20_000] = d <= reach
+    return keep
+
+
 def make_grid(
-    scene: Scene, geo: GeoReference, gsd: float | None = None, margin: float = 0.02, max_pixels: int = 30_000_000
+    scene: Scene, geo: GeoReference, gsd: float | None = None, margin: float = 0.02, max_pixels: int = 30_000_000,
+    reach: float = 1.5,
 ) -> OrthoGrid:
     """Choose the orthophoto extent and resolution from the reconstruction.
 
-    The extent covers the 1st to 99th percentile of the sparse points. The
-    default GSD is the median ``flight height / focal length`` over cameras,
-    i.e. the native resolution of the (undistorted) photos.
+    The extent covers the 1st to 99th percentile of the sparse points that lie
+    horizontally within ``reach`` x flight height of some camera. Points far
+    from every camera (landscape seen by oblique or horizon photos) are left
+    out: they would make a huge, mostly smeared orthophoto. The default GSD is
+    the median ``flight height / focal length`` over cameras, i.e. the native
+    resolution of the (undistorted) photos.
 
     Args:
         scene: Scene (cameras at the resolution that will be orthorectified).
@@ -84,12 +106,22 @@ def make_grid(
         margin: Extra border as a fraction of the extent.
         max_pixels: If the raster would exceed this many pixels the GSD is
             increased (bounds GPU/CPU memory).
+        reach: Keep ground within this many flight heights (horizontally) of a camera.
 
     Returns:
         The :class:`OrthoGrid`.
     """
     pts = geo.scene_to_local(scene.points.astype(np.float64))
     cams = geo.scene_to_local(np.stack([c.center for c in scene.cameras]))
+    if reach and len(pts):
+        ground0 = float(np.median(pts[:, 2]))
+        height = max(float(np.median(cams[:, 2] - ground0)), 5.0)
+        near = _near_cameras(pts, cams, reach * height)
+        if near.sum() >= 100:
+            if near.mean() < 0.95:
+                logger.info("Orthophoto limited to %.0f m around the cameras (%.0f %% of the points)",
+                            reach * height, 100 * near.mean())
+            pts = pts[near]
     lo, hi = np.percentile(pts[:, :2], 1, axis=0), np.percentile(pts[:, :2], 99, axis=0)
     pad = (hi - lo) * margin
     lo, hi = lo - pad, hi + pad
@@ -574,3 +606,93 @@ def make_orthophoto(
         results["gcp_dz"] = diffs
         logger.info("DSM minus GCP height (m): %s", {k: round(v, 2) for k, v in diffs.items()})
     return results
+
+
+def make_targets_orthophoto(
+    scene: Scene,
+    geo: GeoReference,
+    work_dir: str | Path,
+    folder: str | Path,
+    output_dir: str | Path,
+    params: torch.nn.ParameterDict | dict[str, torch.Tensor] | None = None,
+    sh_degree: int = 0,
+    gsd: float | None = None,
+    gcps: str | Path | dict[str, np.ndarray] | None = None,
+) -> dict[str, object]:
+    """High-resolution orthophoto from the photos of one folder, to locate targets.
+
+    Only cameras whose original photo is inside ``folder`` are used, at the
+    full resolution of the original photos (undistorted with the SfM lens
+    model). The extent is that flight's footprint. With ``params`` the surface
+    is the splat DSM (as :func:`make_orthophoto`); without, the sparse DSM (as
+    :func:`make_fast_orthophoto`).
+
+    Args:
+        scene: Full scene (all cameras, sparse points).
+        geo: Georeference of the scene.
+        work_dir: SfM work folder (``catalogue.json``, ``sparse/best``).
+        folder: Folder with the targets flight photos.
+        output_dir: Folder for the outputs (``orthophoto.tif`` / ``fast_orto.tif``,
+            the DSM, a preview and ``images/`` with the full-resolution photos).
+        params: Trained Gaussians, or ``None`` before training.
+        sh_degree: SH degree of ``params``.
+        gsd: Pixel size in meters (``None``: native resolution of the originals,
+            capped at 30 Mpx).
+        gcps: GCPs to draw (``{name: [x, y, z]}`` in the orthophoto CRS).
+
+    Returns:
+        Output paths as :func:`make_orthophoto` / :func:`make_fast_orthophoto`,
+        plus ``"targets_orto"`` (the orthophoto) and ``"targets_dsm"``. Empty if
+        no registered camera comes from ``folder``.
+    """
+    from dataclasses import replace
+
+    from .sources import cameras_in, high_res_cameras
+
+    out = Path(output_dir)
+    cams = cameras_in(scene, work_dir, folder)
+    if not cams:
+        logger.warning("No photo of %s is in the main reconstruction (%s); no targets orthophoto. Its photos do "
+                       "not share enough features with the other photos (different season / year?), so targets "
+                       "seen only there cannot correct the other photos. Use targets visible in the main "
+                       "photos, or process that folder on its own.", folder, _other_models(work_dir, folder))
+        return {}
+    logger.info("Targets orthophoto from %d photos of %s (full resolution)", len(cams), Path(folder).name)
+    cams = high_res_cameras(work_dir, cams, out / "images")
+    sub = replace(scene, cameras=cams)
+    if params is not None:
+        res = make_orthophoto(params, sub, geo, out, sh_degree, gsd, gcps)
+        res["targets_orto"], res["targets_dsm"] = res["orthophoto"], res["dsm"]
+    else:
+        res = make_fast_orthophoto(sub, geo, out, gsd, gcps)
+        res["targets_orto"], res["targets_dsm"] = res["fast_orto"], res["dsm_sparse"]
+    return res
+
+
+def _other_models(work_dir: str | Path, folder: str | Path) -> str:
+    """Describe where the photos of ``folder`` ended up in the SfM models.
+
+    Args:
+        work_dir: SfM work folder (``sparse/<k>`` models, ``catalogue.json``).
+        folder: Photo folder.
+
+    Returns:
+        Short text such as ``"38 of them in a separate model of 40 images"``.
+    """
+    import pycolmap
+
+    from .sources import catalogue_sources, catalogue_key, is_within
+
+    sources = catalogue_sources(work_dir)
+    mine = {k for k, v in sources.items() if is_within(v, folder)}
+    if not mine:
+        return "the folder has no photo in this run"
+    for d in sorted((Path(work_dir) / "sparse").glob("[0-9]*")):
+        try:
+            rec = pycolmap.Reconstruction(str(d))
+        except Exception:  # noqa: BLE001 - unreadable model: skip
+            continue
+        n = sum(catalogue_key(im.name) in mine for im in rec.images.values())
+        if n:
+            return f"{n} of its {len(mine)} photos form a separate model of {rec.num_reg_images()} images"
+    return f"none of its {len(mine)} photos could be registered"

@@ -11,9 +11,20 @@ metadata, and a ``name,x,y,z`` CSV next to the photos is used as ground control
 points. Every option of the ``geosplat`` command is available here; an optional
 JSON file (``--config``, or ``<dataset>/config.json``) can hold defaults::
 
-    {"preset": "fast", "sfm": {"max_images": 60}, "train": {"iterations": 4000}, "geo": {"crs": "EPSG:25830"}}
+    {"preset": "fast", "sfm": {"max_images": 60}, "train": {"iterations": 4000},
+     "geo": {"crs": "EPSG:25830", "targets_orto": "flight_with_targets"}}
 
 Priority: command line > config file > preset > defaults.
+
+Ground control points: with GPS photos and a GCP file, the run writes
+``<output>/gcp/picker.html``. Open it in a browser, click each target on the
+orthophoto, press "Save picks.json" and save it next to the page. Run the same
+command again: the picks correct the georeference of every product; SfM and the
+trained splat are reused, so this takes a fraction of the first run.
+
+``--targets-orto FOLDER`` (or ``geo.targets_orto``) builds that orthophoto at full
+photo resolution from one subfolder only (e.g. a nadir flight with targets) and
+uses only that folder's GCP files; the fast and final orthophotos still use all photos.
 
 Examples::
 
@@ -22,6 +33,7 @@ Examples::
     uv run python examples/run.py drone2024 --preset very_fast
     uv run python examples/run.py /data/flight1 --preset fast --max-images 80 --polygon aoi.gpkg
     uv run python examples/run.py my_scene --preset quality --crs EPSG:25830 -o /data/results
+    uv run python examples/run.py /data/survey --targets-orto "nadir flight"   # targets orthophoto from one folder
 """
 
 from __future__ import annotations
@@ -37,7 +49,7 @@ from geosplat.cli import add_options, configs_from_args
 EXAMPLES_DIR = Path(__file__).resolve().parent
 
 # Public sample datasets downloaded automatically on first use.
-SAMPLES = {"seneca": datasets.download_seneca, "south_building": datasets.download_south_building}
+SAMPLES = datasets.SAMPLES
 
 
 def parse_args() -> argparse.Namespace:
@@ -93,7 +105,7 @@ def load_config_file(dataset_dir: Path, config: str | None) -> dict:
     if not path.is_file():
         return {}
     cfg = json.loads(path.read_text())
-    for section, key in (("sfm", "polygon"), ("geo", "gcps")):
+    for section, key in (("sfm", "polygon"), ("geo", "gcps"), ("geo", "picks")):
         value = cfg.get(section, {}).get(key)
         if value and not Path(value).is_absolute():
             cfg[section][key] = str((path.parent / value).resolve())
@@ -123,6 +135,11 @@ def main() -> None:
     print(f"{'metrics':>18}: {result.metrics}")
     print(f"{'timings (s)':>18}: { {k: round(v, 1) for k, v in result.timings.items()} }")
     print("Open viewer.html in a browser, splat.ply in https://superspl.at/editor, the .tif files in QGIS.")
+    if "gcp_picker" in result.outputs:
+        picks = out_dir / "gcp" / "picks.json"
+        applied = result.geo is not None and "GCPs" in str(result.geo.extra.get("georeferencing", ""))
+        state = "applied in this run" if applied else "not found yet"
+        print(f"Targets: open {result.outputs['gcp_picker']}, save {picks} ({state}) and run this command again.")
 
 
 if __name__ == "__main__":

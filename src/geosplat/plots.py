@@ -58,8 +58,10 @@ def photos(
     """
     from IPython.display import display
 
-    paths = list_images(images_dir)
-    if use_map and len(photo_positions(images_dir)) >= 3:
+    from .sources import photo_positions_in, scan_dataset
+
+    paths = scan_dataset(images_dir).photos
+    if use_map and len(photo_positions_in(images_dir)) >= 3:
         from .mapview import PhotoSelector
 
         selector = PhotoSelector(images_dir, selection_file=selection_file)

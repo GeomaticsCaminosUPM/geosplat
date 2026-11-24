@@ -130,12 +130,32 @@ def _rows(path: Path) -> list[list[str]]:
     """
     text = path.read_text(errors="replace")
     lines = [ln for ln in text.splitlines() if ln.strip()]
+    if lines and all("\t" in ln for ln in lines[:20]):          # tab tables (headers may contain spaces)
+        rows = [ln.split("\t") for ln in lines]
+        return [[c.strip() for c in r if c.strip()] for r in rows if any(c.strip() for c in r)]
     try:
         dialect = csv.Sniffer().sniff("\n".join(lines[:20]), delimiters=",;\t ")
         rows = list(csv.reader(lines, dialect))
     except csv.Error:
         rows = [re.split(r"[,;\t ]+", ln.strip()) for ln in lines]
     return [[c.strip() for c in r if c.strip()] for r in rows if any(c.strip() for c in r)]
+
+
+def norm_header(cell: str) -> str:
+    """Normalize a table header cell for matching column names.
+
+    ``"# File"`` -> ``"file"``, ``"WGS84_Lat"`` -> ``"lat"``, ``"Ell.H(m)"`` -> ``"ellh"``,
+    ``"Altitude (m)"`` -> ``"altitude"``.
+
+    Args:
+        cell: Header text.
+
+    Returns:
+        Lower-case name without comment marks, units, dots or CRS prefixes.
+    """
+    c = re.sub(r"[\(\[].*?[\)\]]", "", cell.lower()).strip().lstrip("#").strip()
+    c = c.replace(".", "").replace(" ", "_")
+    return re.sub(r"^(wgs_?84|etrs_?89|gps|gnss)_", "", c)
 
 
 def _num(v: str) -> float | None:
@@ -176,7 +196,9 @@ def read_table(path: str | Path, names: set[str], crs: str | None = None) -> dic
         file_crs = _parse_crs_line(first)          # ODM geo.txt header line
         if file_crs:
             rows = rows[1:]
-    header = [c.lower().lstrip("#") for c in rows[0]] if rows and _num(rows[0][-1]) is None else None
+    if rows and rows[0][0] == "#":                  # "# name lat lon" header split at the "#"
+        rows[0] = rows[0][1:]
+    header = [norm_header(c) for c in rows[0]] if rows and _num(rows[0][-1]) is None else None
     if header:
         rows = rows[1:]
 
@@ -229,6 +251,12 @@ def read_table(path: str | Path, names: set[str], crs: str | None = None) -> dic
     if file_crs is None and not header:              # ODM-style rows without header: no reliable angles
         yaw = [None] * len(keys)
         pitch = [None] * len(keys)
+    elif header and "roll" in header:
+        # Yaw/pitch/roll of the aircraft (Metashape, Pix4D): pitch ~0 means a level, down-looking camera.
+        # Convert to the gimbal convention used here (-90 = nadir).
+        known = [p for p in pitch if p is not None]
+        if known and float(np.median(np.abs(known))) < 30:
+            pitch = [None if p is None else p - 90.0 for p in pitch]
     return {k: PhotoPosition(float(lat[i]), float(lon[i]), float(z[i]), yaw[i], pitch[i], source)
             for i, k in enumerate(keys)}
 
@@ -489,17 +517,21 @@ def is_positions_file(path: str | Path, image_dir: str | Path) -> bool:
     Returns:
         ``True`` if at least half of the photos (or 3) are found in it.
     """
+    from .sources import scan_dataset
+
     try:
-        photos = list_images(image_dir)
-    except FileNotFoundError:                      # no photos: nothing to list positions for
+        photos = scan_dataset(image_dir).photos
+    except FileNotFoundError:
+        return False
+    if not photos:                                 # no photos: nothing to list positions for
         return False
     n = len(read_positions_file(path, photos))
     return n >= max(3, len(photos) // 2) or (n >= 1 and n == len(photos))
 
 
-@functools.lru_cache(maxsize=32)
+@functools.lru_cache(maxsize=64)
 def _cached_positions(image_dir: str, stamp: tuple, positions_file: str | None, crs: str | None,
-                      gpx_offset: float | None) -> dict[str, PhotoPosition]:
+                      gpx_offset: float | None, extra: tuple[str, ...] = ()) -> dict[str, PhotoPosition]:
     """Cached implementation of :func:`photo_positions` (see there).
 
     Args:
@@ -508,6 +540,7 @@ def _cached_positions(image_dir: str, stamp: tuple, positions_file: str | None, 
         positions_file: Explicit positions file or ``None``.
         crs: CRS for projected tables without one.
         gpx_offset: Camera-to-UTC offset for GPX.
+        extra: Additional candidate files (e.g. side files elsewhere in the dataset).
 
     Returns:
         ``{photo_key: PhotoPosition}``.
@@ -524,7 +557,8 @@ def _cached_positions(image_dir: str, stamp: tuple, positions_file: str | None, 
         side = read_xmp_sidecar(p)
         if side is not None:
             out[_key(p.name)] = side
-    files = [Path(positions_file)] if positions_file else _candidate_files(folder)
+    files = [Path(positions_file)] if positions_file else list(dict.fromkeys(
+        _candidate_files(folder) + [Path(f) for f in extra]))
     gpx = [f for f in files if f.suffix.lower() == ".gpx"]
     for f in [f for f in files if f.suffix.lower() != ".gpx"]:          # 1. positions files (override)
         found = read_positions_file(f, photos, crs)
@@ -552,6 +586,7 @@ def photo_positions(
     positions_file: str | Path | None = None,
     crs: str | None = None,
     gpx_time_offset_s: float | None = None,
+    extra_files: list[Path] | tuple[Path, ...] = (),
 ) -> dict[str, PhotoPosition]:
     """Position of every photo that has one, from all available sources.
 
@@ -562,6 +597,8 @@ def photo_positions(
         crs: CRS of projected coordinates in tables that do not state it.
         gpx_time_offset_s: Seconds to add to camera times to get UTC for GPX matching
             (``None``: from EXIF offset tags or estimated).
+        extra_files: More candidate positions files (e.g. a ``logs`` folder elsewhere
+            in the dataset); files that do not list these photos are ignored.
 
     Returns:
         ``{photo_key: PhotoPosition}``; keys are file names without extension, lower
@@ -573,8 +610,11 @@ def photo_positions(
     stamp = tuple(sorted((p.name, p.stat().st_mtime) for d in {folder, folder.parent} for p in d.iterdir()
                          if p.is_file() and p.suffix.lower() in TABLE_EXTENSIONS + VECTOR_EXTENSIONS
                          + (".mrk", ".gpx", ".xmp")))
+    extra = tuple(sorted(str(Path(f).resolve()) for f in extra_files
+                         if Path(f).suffix.lower() in TABLE_EXTENSIONS + VECTOR_EXTENSIONS + (".mrk", ".gpx")))
+    stamp += tuple((f, Path(f).stat().st_mtime) for f in extra if Path(f).exists())
     return _cached_positions(str(folder), stamp, str(positions_file) if positions_file else None, crs,
-                             gpx_time_offset_s)
+                             gpx_time_offset_s, extra)
 
 
 def position_of(photo: str | Path, positions: dict[str, PhotoPosition]) -> PhotoPosition | None:

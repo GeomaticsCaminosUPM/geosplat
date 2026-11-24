@@ -15,7 +15,11 @@ images/ ─► COLMAP SfM (GPU) ─► georeference (EXIF GPS) ─► fast_orto/
                                                               └─► ortho/orthophoto.tif, dsm.tif
 ```
 
-Without GPS, orthophotos are produced in a local frame (no CRS, SfM units).
+Without GPS, orthophotos are produced in a local frame (no CRS, SfM units). With ground control points, locate
+the targets on the orthophoto in `gcp/picker.html` and run again: every product is corrected.
+
+**Tutorials** on public sample data (nothing of your own needed): [run.py](docs/tutorial_run_py.md) ·
+[notebook](docs/tutorial_notebook.md) · [input files](docs/input_files.md).
 
 - **SfM:** `pycolmap` with CUDA (`pycolmap-cuda12` on Linux x86_64), covering SIFT extraction, matching and bundle
   adjustment. Matching is exhaustive, sequential, or GPS-guided spatial.
@@ -82,6 +86,11 @@ output/
 ├── points_sparse.ply          # SfM tie points (colored)
 ├── points_dense.ply           # dense colored points (centers of solid Gaussians)
 ├── geo.json                   # georeference: CRS, origin, scene→CRS transform, GPS fit RMSE
+├── ortho_targets/             # with targets_orto: full-resolution orthophoto of that flight (+ dsm.tif)
+├── gcp/                       # with GCPs and positions:
+│   ├── picker.html            #   locate the targets in a browser, "Save picks.json"
+│   ├── picks.json             #   your picks (saved by the page); applied when you run again
+│   └── report.json            #   GCP fit: method, residuals, RMSE
 ├── fast_orto/                 # FIRST orthophoto, seconds after COLMAP (before training)
 │   ├── fast_orto.tif          # photos orthorectified on a DSM interpolated from SfM points
 │   ├── dsm_sparse.tif         # that coarse DSM
@@ -189,13 +198,19 @@ examples/
 ├── south_building/          # hand-held photos, no GPS (downloadable)
 │   ├── download.py
 │   └── images/
-└── drone2024/                # private drone flight, GPS + ground control points (not in git)
-    └── images/              # photos + targets.csv (GCPs); any file names, all detected automatically
+├── aerial_gcps/             # Agisoft sample survey: positions table + surveyed GCPs (downloadable)
+│   ├── download.py
+│   └── images/              # photos + Cameras_WGS84.txt + GCPs_WGS84.txt
+├── drone2024/                # private drone flight, GPS + ground control points (not in git)
+│   └── images/              # photos + targets.csv (GCPs); any file names, all detected automatically
+└── droneNov2026/            # private: several flights, a video, logs with targets, ignore/ and results/ (not in git)
+    └── config.json          # {"geo": {"targets_orto": "Vuelo orto programado con dianas"}}
 ```
 
 ```bash
 uv run python examples/run.py seneca --preset fast                  # downloads 40 GPS drone photos (~90 MB) on first use
 uv run python examples/run.py south_building --preset fast          # downloads 40 photos (~420 MB archive) on first use
+uv run python examples/run.py aerial_gcps --preset fast             # downloads 40 survey photos + GCPs (~440 MB) on first use
 uv run python examples/run.py drone2024 --preset medium
 ```
 
@@ -219,8 +234,8 @@ whether the photos have GPS:
 - **Without GPS:** the same steps run in a local frame, and the orthophotos are shown as plain images.
 
 Either way, it shows the fast orthophoto, the point cloud, an interactive 3D viewer of the splat and the final
-orthophoto, then zips the results. With `SAMPLE = "seneca"` it downloads 40 GPS-tagged drone photos from
-OpenDroneMap. To run it locally: `uv run --group dev jupyter lab examples/run.ipynb`.
+orthophoto, then zips the results. `IMAGES_DIR = "seneca"`, `"south_building"` or `"aerial_gcps"` downloads a
+public sample. To run it locally: `uv run --group dev jupyter lab examples/run.ipynb`.
 
 ## Visualizing the results
 
@@ -272,6 +287,19 @@ Open `fast_orto/fast_orto.tif`, `ortho/orthophoto.tif` and `ortho/dsm.tif` in QG
 **Layer Properties ▸ Symbology ▸ Singleband pseudocolor**, or **Raster ▸ Analysis ▸ Hillshade**. Overlay your GCPs
 or a reference orthophoto (e.g. PNOA WMS in Spain) to check the georeferencing.
 
+Input folders: give geosplat a folder (or a `.zip`) organised however you like. It is scanned recursively:
+
+- **Photos:** every subfolder with photos is used, e.g. one folder per flight. Each folder gets its own camera
+  calibration, and equal file names in different folders don't clash.
+- **Videos** (`.mp4`, `.mov`, …): evenly spaced frames are extracted (`--frames-per-video`; the preset sets 15 / 30
+  / 50 / 100) and reconstructed with their own camera. Identical copies of a video in several folders are used
+  once. A DJI `.SRT` subtitle file next to a video gives its frames GPS positions.
+- **Side files** anywhere in the tree (CSV, TXT, GeoPackage, MRK, GPX, SRT, XMP…) are checked for photo positions
+  and ground control points. Copies of the same GCP file, or the same targets with and without names, are merged.
+- **Skipped folders:** `ignore`, `ignored`, `exclude`, `results`, `output*`, hidden folders and `__MACOSX`, at any
+  depth. Add more with `--ignore-folder PATTERN` (or `SfMConfig(ignore_folders=...)`). Results are written to
+  `output_<preset>` inside the dataset folder, so they're never read as input.
+
 Photo positions: they are read from every common source, so the photos folder can contain whatever your
 workflow produces. Files are searched in the photo folder and its parent; `--positions FILE` forces one.
 
@@ -301,10 +329,25 @@ Ground control points: put a GCP file (any name) next to the photos and it is de
   inside the photographed area.
 
 If you don't set an output CRS (`--crs`), a projected GCP CRS is used for all outputs, so everything matches your
-survey. The GCPs are drawn on the previews, compared with the DSM (`gcp_check.json`) and used for the GCP refit in
-the notebook. Accuracy: georeferencing uses only the drone's EXIF GPS, so expect meter-level absolute error horizontally, and
-sometimes several meters vertically, because consumer drone altitude is barometric. The internal geometry is much
-better than that. `gcp_check.json` reports DSM height minus GCP height, and the preview marks the GCP positions.
+survey. The GCPs are drawn on the previews and compared with the DSM (`gcp_check.json`). Without picks,
+georeferencing uses only the photo positions: with consumer drone GPS expect meter-level error horizontally, and
+sometimes tens of meters vertically (barometric altitude). The internal geometry is much better than that.
+
+**Locating the targets** corrects that error:
+
+1. A run with GCPs writes `gcp/picker.html`. Open it in a browser, click each target on the orthophoto (pink ✕,
+   draggable; 3+ points for a 7-parameter fit, 1–2 for a shift) and press **Save picks.json** into `gcp/`.
+2. Run the same command again. The picks correct the georeference of every product; SfM and the trained splat are
+   reused, so it takes seconds. `gcp/report.json` has the residuals.
+
+In the notebook the same step is section 7. The picks file is shared, so `run.py` applies notebook picks too.
+
+**`targets_orto`** (`--targets-orto FOLDER`, `geo.targets_orto` in `config.json`, `TARGETS_ORTO` in the notebook):
+a subfolder, e.g. a low nadir flight flown for the targets. Its photos build `ortho_targets/orthophoto.tif` at the
+full resolution of the original photos, which the picker uses. Only the GCP files inside it are read, and target
+files of other campaigns are ignored. `None` (default) means all photos and all GCP files. The fast and final
+orthophotos always use every photo. That flight must be part of the same reconstruction (shared features). A flight
+from another season or year may not be, and the run then warns that its targets can't correct the other photos.
 
 ### Quick looks without a viewer
 
@@ -326,7 +369,8 @@ uv run pytest --run-slow      # + end-to-end tests with the very_fast preset (~2
 ```
 
 The slow tests run `examples/run.ipynb` (copies generated in `tests/notebooks/`) on the Seneca sample (and on
-`drone2024` if present), and run `examples/run.py` on `drone2024` and `south_building` when their photos are present.
+`drone2024` if present), and run `examples/run.py` on every example whose photos are present. With `aerial_gcps`
+downloaded they also check the picks round trip: saved picks correct the georeference on the next run.
 
 ## Package layout
 
@@ -335,12 +379,17 @@ The slow tests run `examples/run.ipynb` (copies generated in `tests/notebooks/`)
 | `sfm.py` | COLMAP pipeline (`run_sfm`, `SfMConfig`), GPU, image selection |
 | `selection.py` | Subsampling, polygon filtering |
 | `scene.py` | COLMAP loading, scene normalization, image dataset |
-| `geo.py` | EXIF GPS, CRS, similarity fit (`GeoReference`, `GeoConfig`), GCP CSV |
+| `geo.py` | EXIF GPS, CRS, similarity fit (`GeoReference`, `GeoConfig`), GCP files and CRS inference |
+| `sources.py` | Dataset scan (subfolders, videos, side files, ignored folders), frame extraction, catalogue |
+| `positions.py` | Photo positions from EXIF, XMP, geo.txt / CSV, vector files, DJI MRK, GPX |
+| `gcp.py` | Notebook GCP picker, georeference refit from picks |
+| `picker_html.py` | Stand-alone `gcp/picker.html` page |
+| `datasets.py` | Sample downloads (`seneca`, `south_building`, `aerial_gcps`), zip handling |
 | `trainer.py` | Optimization loop, densification (default / MCMC), metrics |
 | `render.py` | gsplat CUDA backend (pinhole/ortho, RGB/depth) + PyTorch fallback |
 | `gaussians.py` | Initialization, background sphere, splat PLY export/import |
 | `pointcloud.py` | Sparse / dense colored point clouds |
-| `ortho.py` | Orthophoto from photos and from the splat, DSM, GeoTIFF |
+| `ortho.py` | Orthophoto from photos and from the splat, targets orthophoto, DSM, GeoTIFF |
 | `video.py` | Camera paths, GIF export |
 | `viewer.py` | Interactive WebGL splat viewer (`show`, `save_viewer`) |
 | `mapview.py` | Notebook maps: photo positions with polygon selection, orthophoto overlay |
