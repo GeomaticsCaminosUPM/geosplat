@@ -154,21 +154,44 @@ def point_cloud(ply_path: str | Path, max_points: int = 150_000, point_size: flo
     plt.show()
 
 
-def splat(params: object, cameras: list | None = None, max_splats: int = 300_000, height: int = 600) -> object:
+def splat(
+    params: object,
+    cameras: list | None = None,
+    max_splats: int = 300_000,
+    height: int = 600,
+    scene: object | None = None,
+    min_opacity: float | str = "auto",
+    geo: object | None = None,
+) -> object:
     """Interactive 3D viewer of a Gaussian splat (drag: orbit, right-drag: pan, wheel: zoom).
+
+    With ``scene``, the viewer also has a **Point cloud** view of the dense
+    points (the same points as ``points_dense.ply``). The **Classes** color mode
+    shows solid surfaces / ground vegetation / trees (tab Trees) or separate
+    objects (tab Objects) over the RGB colors.
 
     Args:
         params: Trained parameters or a path to ``splat.ply``.
         cameras: Optional training cameras for the initial view.
         max_splats: Maximum number of Gaussians sent to the browser.
         height: Viewer height in pixels.
+        scene: The training scene, to add the dense point cloud view.
+        min_opacity: Opacity threshold of the dense points (as ``dense_min_opacity``).
+        geo: Georeference, for object sizes in meters (optional).
 
     Returns:
         HTML display object (shown when it is the last expression of a cell).
     """
     from .viewer import show
 
-    return show(params, cameras, max_splats, height)  # type: ignore[arg-type]
+    points = region = None
+    if scene is not None and not isinstance(params, (str, Path)):
+        from .pointcloud import dense_points_from_splat, processed_region
+
+        points = dense_points_from_splat(params, scene, min_opacity, return_index=True)  # type: ignore[arg-type]
+        region = processed_region(params, scene)  # type: ignore[arg-type]
+    return show(params, cameras, max_splats, height, points=points, region=region,  # type: ignore[arg-type]
+                m_per_unit=getattr(geo, "scale", None))
 
 
 def renders(output_dir: str | Path, n: int = 3) -> None:

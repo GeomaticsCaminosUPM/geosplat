@@ -76,9 +76,15 @@ def add_options(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     geo.add_argument("--targets-orto", default=None,
                      help="Folder (path or name inside the dataset) whose photos build a full-resolution orthophoto "
                           "to locate the targets; only its GCP files are used (default: all photos and GCP files).")
-    geo.add_argument("--picks", default=None,
-                     help="Targets located on the orthophoto (picks.json from gcp/picker.html) to correct the "
-                          "georeference (default: <output>/gcp/picks.json if it exists).")
+    geo.add_argument("--located-targets", default=None,
+                     help="Targets located on the orthophoto (located_targets.json from targets/locate_targets.html) to correct the "
+                          "georeference (default: <output>/targets/located_targets.json if it exists).")
+    geo.add_argument("--ortho-max-angle", type=float, default=None,
+                     help="Orthophotos: largest view angle from vertical (degrees) of a usable photo; "
+                          "spots seen only more obliquely stay empty (default 35).")
+    geo.add_argument("--ortho-min-resolution", type=float, default=None,
+                     help="Orthophotos: smallest usable photo resolution as a fraction of the orthophoto's; "
+                          "spots seen only more coarsely stay empty (default 0.5).")
     geo.add_argument("--dense-min-opacity", default=None,
                      type=lambda v: v if v == "auto" else float(v),
                      help="Min Gaussian opacity (0-1) for points_dense.ply, or 'auto' (default, Otsu).")
@@ -129,7 +135,8 @@ def configs_from_args(
     cli_geo = dict(
         enabled=off(a.no_geo), crs=a.crs, ortho=off(a.no_ortho), fast_orto=off(a.no_fast_orto), gsd=a.gsd, gcps=a.gcps, gcps_crs=a.gcps_crs,
         positions=a.positions, positions_crs=a.positions_crs, gpx_time_offset=a.gpx_offset,
-        dense_min_opacity=a.dense_min_opacity, targets_orto=a.targets_orto, picks=a.picks,
+        dense_min_opacity=a.dense_min_opacity, targets_orto=a.targets_orto, ortho_max_angle=a.ortho_max_angle,
+        ortho_min_resolution=a.ortho_min_resolution, located_targets=a.located_targets,
     )
 
     def merged(section: str, cli: dict) -> dict:

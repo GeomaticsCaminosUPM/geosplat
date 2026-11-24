@@ -249,8 +249,24 @@ def orthorectify_photos(
     occlusion_tolerance: float = 0.03,
     depth_scale: float = 0.5,
     chunk: int = 2_000_000,
+    max_view_angle: float = 35.0,
+    min_resolution: float = 0.5,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Build an orthophoto from the original photos using the splat surface.
+
+    Each ground cell takes the photos that see it **sharpest**: the weight of a
+    view is its ground resolution there (pixels per meter, i.e. focal length x
+    cos(view angle from vertical) / distance) relative to the orthophoto's,
+    raised to ``blend_power``, times ``(1 - r) ** blend_power`` with ``r`` the
+    distance to the image centre (so, among similar views, the most central
+    ray wins and relief displacement stays small).
+    Close nadir photos are therefore preferred over distant or oblique ones
+    (horizon shots, video frames).
+
+    A view is used for a cell only if it looks at it within ``max_view_angle``
+    of vertical and sees the ground at least ``min_resolution`` times as finely
+    as the orthophoto pixel. Cells without such a view are left empty
+    (``coverage`` False, transparent in the GeoTIFF).
 
     Args:
         params: Gaussian parameters (scene coordinates) used to render depth
@@ -262,11 +278,14 @@ def orthorectify_photos(
         elevation: Surface height per ortho pixel ``[H, W]`` (local meters).
         valid: Boolean mask ``[H, W]`` of pixels with a surface.
         sh_degree: SH degree of the model (unused for depth, kept for API symmetry).
-        blend_power: Exponent on the per-view "nadir-ness" weight. Higher values
-            approach picking the single best photo (sharper, harder seams).
+        blend_power: Exponent on the per-view resolution weight. Higher values
+            approach picking the single sharpest photo (sharper, harder seams).
         occlusion_tolerance: Relative depth tolerance for the visibility test.
         depth_scale: Resolution factor of the depth maps used for occlusion.
         chunk: Ortho pixels processed at once (bounds GPU memory).
+        max_view_angle: Largest angle from vertical (degrees) of a usable view.
+        min_resolution: Smallest usable view resolution, as a fraction of the
+            orthophoto resolution (0.5: a photo pixel at most 2x the ortho pixel).
 
     Returns:
         Tuple ``(rgb [H, W, 3], coverage [H, W] bool)``.
@@ -284,6 +303,13 @@ def orthorectify_photos(
     acc_any = torch.zeros(n, 3, device=device)
     wsum_any = torch.zeros(n, device=device)
     mask = valid.reshape(-1)
+    # Vertical (up) direction and meters per unit in scene coordinates, for the view angle and distance.
+    A = torch.as_tensor(geo.scene_to_geo[:3, :3], dtype=torch.float64, device=device)
+    up = torch.linalg.solve(A, torch.tensor([0.0, 0.0, 1.0], dtype=torch.float64, device=device))
+    up = (up / up.norm()).float()
+    m_per_unit = geo.scale
+    cos_max = float(np.cos(np.radians(max_view_angle)))
+    ref_res = 1.0 / grid.gsd                                   # orthophoto pixels per meter
 
     for cam in cameras:
         img = _load_image(cam.image_path, (cam.width, cam.height), device)
@@ -297,6 +323,8 @@ def orthorectify_photos(
             depth = torch.full((dcam.height, dcam.width), 1e10, device=device)
         Kf = torch.tensor(cam.K, dtype=torch.float32, device=device)
         half_diag = 0.5 * float(np.hypot(cam.width, cam.height))
+        center = torch.tensor(cam.center, dtype=torch.float32, device=device)
+        focal = float(np.sqrt(cam.K[0, 0] * cam.K[1, 1]))
         for s0 in range(0, n, chunk):
             p = pts[s0 : s0 + chunk]
             pc = p @ vm[:3, :3].T + vm[:3, 3]
@@ -307,10 +335,16 @@ def orthorectify_photos(
             gy = uv[:, 1] / cam.height * 2 - 1
             grid_xy = torch.stack([gx, gy], -1)[None, None]
             d = F.grid_sample(depth[None, None], grid_xy, mode="nearest", align_corners=False)[0, 0, 0]
-            seen = inside & mask[s0 : s0 + chunk]
-            visible = seen & (z <= d * (1 + occlusion_tolerance))
             r = torch.linalg.norm(uv - Kf[:2, 2], dim=1) / half_diag
-            w_any = (1 - r).clamp_min(0) ** blend_power * seen
+            ray = center - p                                       # ground -> camera
+            dist = ray.norm(dim=1).clamp_min(1e-6)
+            cos_v = ((ray @ up) / dist).clamp_min(0)               # 1 = straight down, 0 = horizontal
+            res = focal * cos_v / (dist * m_per_unit)              # photo pixels per ground meter
+            good = (cos_v >= cos_max) & (res >= min_resolution * ref_res)
+            seen = inside & mask[s0 : s0 + chunk] & good
+            visible = seen & (z <= d * (1 + occlusion_tolerance))
+            sharp = (res / ref_res).clamp_min(1e-6).log().mul(blend_power).clamp(-60, 60).exp()
+            w_any = sharp * (1 - r).clamp_min(0) ** blend_power * seen
             w = w_any * visible
             col = F.grid_sample(img[None], grid_xy, mode="bilinear", align_corners=False)[0, :, 0].T
             acc[s0 : s0 + chunk] += col * w[:, None]
@@ -323,6 +357,48 @@ def orthorectify_photos(
     coverage = wsum > 0
     rgb = torch.where(coverage[:, None], acc / wsum.clamp_min(1e-12)[:, None], torch.zeros_like(acc))
     return rgb.reshape(grid.height, grid.width, 3), coverage.reshape(grid.height, grid.width)
+
+
+@torch.no_grad()
+def supported_by_points(
+    points_local: np.ndarray, grid: OrthoGrid, elev: torch.Tensor, radius: float, tol: float
+) -> torch.Tensor:
+    """Whether an SfM point lies near the surface height of each ortho pixel.
+
+    Points are put in a 3D occupancy grid of ``radius`` x ``radius`` x ``tol``
+    cells, dilated by one cell; a pixel is supported when the cell at its
+    surface height is occupied. Wall tops and roofs carry SfM points; splat
+    floaters and holes do not.
+
+    Args:
+        points_local: SfM points ``[N, 3]`` in local geo coordinates.
+        grid: Ortho grid.
+        elev: Surface height per pixel ``[H, W]`` (local).
+        radius: Horizontal cell size.
+        tol: Vertical cell size.
+
+    Returns:
+        Boolean ``[H, W]``.
+    """
+    device = elev.device
+    pts = torch.as_tensor(points_local, dtype=torch.float32, device=device)
+    z0 = float(min(pts[:, 2].min().item(), elev.min().item())) - tol
+    nx = int(np.ceil(grid.width * grid.gsd / radius)) + 1
+    ny = int(np.ceil(grid.height * grid.gsd / radius)) + 1
+    nz = int(np.ceil((max(pts[:, 2].max().item(), elev.max().item()) - z0) / tol)) + 2
+    if nx * ny * nz > 200_000_000:                                # absurd extent: no test
+        return torch.ones_like(elev, dtype=torch.bool)
+    ix = ((pts[:, 0] - grid.left) / radius).long()
+    iy = ((grid.top - pts[:, 1]) / radius).long()
+    iz = ((pts[:, 2] - z0) / tol).long()
+    ok = (ix >= 0) & (ix < nx) & (iy >= 0) & (iy < ny) & (iz >= 0) & (iz < nz)
+    occ = torch.zeros(nz, ny, nx, device=device)
+    occ[iz[ok], iy[ok], ix[ok]] = 1.0
+    occ = F.max_pool3d(occ[None, None], 3, 1, 1)[0, 0] > 0
+    cols = ((torch.arange(grid.width, device=device) + 0.5) * grid.gsd / radius).long().clamp(0, nx - 1)
+    rows = ((torch.arange(grid.height, device=device) + 0.5) * grid.gsd / radius).long().clamp(0, ny - 1)
+    kz = ((elev - z0) / tol).long().clamp(0, nz - 1)
+    return occ[kz, rows[:, None].expand_as(kz), cols[None].expand_as(kz)]
 
 
 @torch.no_grad()
@@ -417,6 +493,8 @@ def make_fast_orthophoto(
     gsd: float | None = None,
     gcps: str | Path | dict[str, np.ndarray] | None = None,
     device: torch.device | str | None = None,
+    max_view_angle: float = 35.0,
+    min_resolution: float = 0.5,
 ) -> dict[str, object]:
     """Fast orthophoto straight from SfM (no splat training needed).
 
@@ -433,6 +511,8 @@ def make_fast_orthophoto(
         gcps: Optional GCPs to draw on the preview: ``{name: [x, y, z]}`` in the
             orthophoto CRS (see :func:`geosplat.geo.load_gcps`) or a file in that CRS.
         device: Torch device (default: CUDA if available).
+        max_view_angle: See :func:`orthorectify_photos`.
+        min_resolution: See :func:`orthorectify_photos`.
 
     Returns:
         Dictionary with output paths and the GSD.
@@ -446,7 +526,8 @@ def make_fast_orthophoto(
     logger.info("fast_orto grid %dx%d at %.3f m/px", grid.width, grid.height, grid.gsd)
     elev = dsm_from_points(geo.scene_to_local(scene.points.astype(np.float64)), grid, device)
     valid = torch.ones_like(elev, dtype=torch.bool)
-    rgb, cov = orthorectify_photos(None, scene.cameras, geo, grid, elev, valid, sh_degree=0)
+    rgb, cov = orthorectify_photos(None, scene.cameras, geo, grid, elev, valid, sh_degree=0,
+                                   max_view_angle=max_view_angle, min_resolution=min_resolution)
     rgba = torch.cat([(rgb * 255).round().byte(), (cov.float() * 255).byte()[..., None]], -1).cpu().numpy()
     results: dict[str, object] = {"gsd": grid.gsd, "width": grid.width, "height": grid.height}
     results["fast_orto"] = write_geotiff(out / "fast_orto.tif", rgba, geo, grid)
@@ -548,6 +629,9 @@ def make_orthophoto(
     gsd: float | None = None,
     gcps: str | Path | dict[str, np.ndarray] | None = None,
     from_photos: bool = True,
+    surface_tolerance: float = 1.0,
+    max_view_angle: float = 35.0,
+    min_resolution: float = 0.5,
 ) -> dict[str, object]:
     """Produce GeoTIFF orthophotos and DSM for a georeferenced splat.
 
@@ -562,6 +646,14 @@ def make_orthophoto(
             in that CRS) to mark on the previews and
             to compare against the DSM.
         from_photos: Also orthorectify the original photos.
+        surface_tolerance: The surface (``dsm.tif``, and the one the photos are
+            projected on) is the splat depth where SfM points lie within this
+            many meters of it (vertically; half of it horizontally) or where it
+            is within this many meters of the SfM-point surface, and the
+            SfM-point surface elsewhere. ``0`` uses the splat depth everywhere.
+            Without a CRS the value is a fraction of the scene radius (x 0.01).
+        max_view_angle: See :func:`orthorectify_photos`.
+        min_resolution: See :func:`orthorectify_photos`.
 
     Returns:
         Dictionary with output paths, the GSD and, if GCPs were given, the
@@ -575,6 +667,14 @@ def make_orthophoto(
     measured = alpha > 0.5
     # Semi-transparent spots (thin or unseen-from-above splats): interpolate the surface.
     elev = fill_holes(elev, measured)
+    if surface_tolerance > 0 and len(scene.points):
+        local_pts = geo.scene_to_local(scene.points.astype(np.float64))
+        sparse = dsm_from_points(local_pts, grid, elev.device)
+        tol = surface_tolerance if geo.crs else surface_tolerance * 0.01 * scene.scene_scale * geo.scale
+        consistent = supported_by_points(local_pts, grid, elev, 0.5 * tol, tol) | ((elev - sparse).abs() < tol)
+        logger.info("Splat surface kept on %.0f %% of the area (supported by SfM points; SfM surface elsewhere)",
+                    100 * consistent.float().mean().item())
+        elev = torch.where(consistent, elev, sparse)
     valid = alpha > 0.05
     results: dict[str, object] = {"gsd": grid.gsd, "width": grid.width, "height": grid.height}
 
@@ -588,7 +688,8 @@ def make_orthophoto(
     preview_src = rgba[..., :3]
     if from_photos:
         everywhere = torch.ones_like(valid)
-        photo_rgb, cov = orthorectify_photos(params, scene.cameras, geo, grid, elev, everywhere, sh_degree)
+        photo_rgb, cov = orthorectify_photos(params, scene.cameras, geo, grid, elev, everywhere, sh_degree,
+                                             max_view_angle=max_view_angle, min_resolution=min_resolution)
         cov8 = (cov.float() * 255).byte()
         prgba = torch.cat([(photo_rgb * 255).round().byte(), cov8[..., None]], -1).cpu().numpy()
         results["orthophoto"] = write_geotiff(out / "orthophoto.tif", prgba, geo, grid)
@@ -618,6 +719,8 @@ def make_targets_orthophoto(
     sh_degree: int = 0,
     gsd: float | None = None,
     gcps: str | Path | dict[str, np.ndarray] | None = None,
+    max_view_angle: float = 35.0,
+    min_resolution: float = 0.5,
 ) -> dict[str, object]:
     """High-resolution orthophoto from the photos of one folder, to locate targets.
 
@@ -639,6 +742,8 @@ def make_targets_orthophoto(
         gsd: Pixel size in meters (``None``: native resolution of the originals,
             capped at 30 Mpx).
         gcps: GCPs to draw (``{name: [x, y, z]}`` in the orthophoto CRS).
+        max_view_angle: See :func:`orthorectify_photos`.
+        min_resolution: See :func:`orthorectify_photos`.
 
     Returns:
         Output paths as :func:`make_orthophoto` / :func:`make_fast_orthophoto`,
@@ -661,10 +766,12 @@ def make_targets_orthophoto(
     cams = high_res_cameras(work_dir, cams, out / "images")
     sub = replace(scene, cameras=cams)
     if params is not None:
-        res = make_orthophoto(params, sub, geo, out, sh_degree, gsd, gcps)
+        res = make_orthophoto(params, sub, geo, out, sh_degree, gsd, gcps,
+                              max_view_angle=max_view_angle, min_resolution=min_resolution)
         res["targets_orto"], res["targets_dsm"] = res["orthophoto"], res["dsm"]
     else:
-        res = make_fast_orthophoto(sub, geo, out, gsd, gcps)
+        res = make_fast_orthophoto(sub, geo, out, gsd, gcps,
+                                   max_view_angle=max_view_angle, min_resolution=min_resolution)
         res["targets_orto"], res["targets_dsm"] = res["fast_orto"], res["dsm_sparse"]
     return res
 

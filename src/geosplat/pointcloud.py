@@ -63,13 +63,43 @@ def otsu_threshold(values: torch.Tensor, bins: int = 256, lo: float = 0.05, hi: 
 
 
 @torch.no_grad()
+@torch.no_grad()
+def processed_region(
+    params: torch.nn.ParameterDict | dict[str, torch.Tensor], scene: Scene, max_radius: float = 1.5,
+    max_scale_quantile: float = 0.95,
+) -> torch.Tensor:
+    """Gaussians of the reconstructed area (not the far background or horizon).
+
+    Args:
+        params: Gaussian parameters (scene coordinates).
+        scene: Scene (used for its center and scale).
+        max_radius: Keep Gaussians closer than ``max_radius * scene_scale`` to
+            the center of the SfM points (drops the background sphere and horizon).
+        max_scale_quantile: Drop the largest Gaussians (blurry background
+            blobs) above this quantile of their largest axis.
+
+    Returns:
+        Boolean mask ``[N]`` on the parameters' device.
+    """
+    means = params["means"].detach()
+    scale = torch.exp(params["scales"].detach()).max(dim=1).values
+    center = torch.as_tensor(
+        np.median(scene.points, axis=0) if len(scene.points) else np.zeros(3), dtype=means.dtype, device=means.device
+    )
+    inside = (means - center).norm(dim=1) < max_radius * scene.scene_scale
+    if inside.any():
+        inside &= scale <= torch.quantile(scale[inside].float()[:1_000_000], max_scale_quantile)
+    return inside
+
+
 def dense_points_from_splat(
     params: torch.nn.ParameterDict | dict[str, torch.Tensor],
     scene: Scene,
     min_opacity: float | str = "auto",
     max_scale_quantile: float = 0.95,
     max_radius: float = 1.5,
-) -> tuple[np.ndarray, np.ndarray]:
+    return_index: bool = False,
+) -> tuple[np.ndarray, ...]:
     """Extract a dense colored point cloud from the centers of solid Gaussians.
 
     Args:
@@ -81,9 +111,11 @@ def dense_points_from_splat(
             blobs) above this quantile of the largest axis.
         max_radius: Drop points farther than ``max_radius * scene_scale`` from
             the scene center (removes the background sphere).
+        return_index: Also return the index of each point's Gaussian.
 
     Returns:
-        Tuple ``(xyz [N, 3] float64 in scene coordinates, rgb [N, 3] uint8)``.
+        Tuple ``(xyz [N, 3] float64 in scene coordinates, rgb [N, 3] uint8)``,
+        plus ``index [N]`` with ``return_index``.
     """
     means = params["means"].detach()
     opacity = torch.sigmoid(params["opacities"].detach())
@@ -99,6 +131,8 @@ def dense_points_from_splat(
     if keep.any():
         keep &= scale <= torch.quantile(scale[keep].float()[:1_000_000], max_scale_quantile)
     rgb = (sh_to_rgb(params["sh0"].detach()[keep, 0]).clamp(0, 1) * 255).round().byte()
+    if return_index:
+        return means[keep].double().cpu().numpy(), rgb.cpu().numpy(), torch.nonzero(keep).reshape(-1).cpu().numpy()
     return means[keep].double().cpu().numpy(), rgb.cpu().numpy()
 
 

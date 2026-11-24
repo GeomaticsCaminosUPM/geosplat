@@ -58,7 +58,7 @@ In section 7:
 2. Run the next cell. It prints the fit (method, RMSE, residuals per point).
 3. Run the rest. The final orthophoto, DSM and point clouds use the GCP georeference.
 
-The picks are saved to `OUTPUT_DIR/gcp/picks.json`. `examples/run.py` on the same output folder applies them too.
+The picks are saved to `OUTPUT_DIR/targets/located_targets.json`. `examples/run.py` on the same output folder applies them too.
 
 ## 4. Your own photos
 

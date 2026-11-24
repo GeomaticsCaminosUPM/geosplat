@@ -206,7 +206,7 @@ def _scan_cached(root_str: str, ignore: tuple[str, ...], stamp: tuple) -> Datase
             if p.is_file() and p.suffix.lower() in VIDEO_EXTENSIONS:
                 fp = _fingerprint(p)
                 if fp in seen_videos:
-                    logger.info("Skipping %s (same video as %s)", p.relative_to(root), seen_videos[fp].relative_to(root))
+                    _log_once("Skipping %s (same video as %s)", p.relative_to(root), seen_videos[fp].relative_to(root))
                 else:
                     seen_videos[fp] = p
                     ds.videos.append(p)
@@ -448,6 +448,22 @@ def photo_positions_in(root: str | Path, config: object | None = None,
             if q is not None:
                 out[p] = q
     return out
+
+
+_LOGGED: set[str] = set()
+
+
+def _log_once(msg: str, *args: object) -> None:
+    """Log an info message only the first time it appears (datasets are scanned several times per run).
+
+    Args:
+        msg: Message format.
+        *args: Format arguments.
+    """
+    text = msg % args
+    if text not in _LOGGED:
+        _LOGGED.add(text)
+        logger.info(text)
 
 
 def resolve_subfolder(root: str | Path, folder: str | Path) -> Path:

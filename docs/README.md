@@ -4,7 +4,7 @@
 | --- | --- |
 | [Tutorial: `examples/run.py`](tutorial_run_py.md) | Command line, step by step, on public sample data |
 | [Tutorial: `examples/run.ipynb`](tutorial_notebook.md) | Notebook (Colab or local), step by step, on public sample data |
-| [Input files](input_files.md) | Photo folders, videos, photo positions, ground control points, `picks.json` |
+| [Input files](input_files.md) | Photo folders, videos, photo positions, ground control points, `located_targets.json` |
 | [Main README](../README.md) | Install, outputs, presets, every option, viewers |
 
 The tutorials use three public samples that are downloaded automatically the first time they are used:

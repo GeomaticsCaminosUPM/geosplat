@@ -37,7 +37,7 @@ def test_run_script_very_fast(dataset: str) -> None:
 
 @pytest.mark.slow
 def test_picks_round_trip(tmp_path: Path) -> None:
-    """Picks saved from ``gcp/picker.html`` correct the georeference on the next run, reusing SfM and the splat.
+    """Picks saved from ``targets/locate_targets.html`` correct the georeference on the next run, reusing SfM and the splat.
 
     Picks are simulated 1 m east of the surveyed targets, with heights taken from
     the page's embedded DSM; the second run must remove that shift.
@@ -53,7 +53,7 @@ def test_picks_round_trip(tmp_path: Path) -> None:
            "--video-frames", "0", "-o", str(out)]
     first = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=1800)
     assert first.returncode == 0, first.stdout[-3000:] + first.stderr[-3000:]
-    page = (out / "gcp" / "picker.html").read_text()
+    page = (out / "targets" / "locate_targets.html").read_text()
     data = json.loads(page.split("const D = ")[1].split(";\nconst KEY")[0])
     dsm = data["dsm"]
     picks = {}
@@ -64,14 +64,14 @@ def test_picks_round_trip(tmp_path: Path) -> None:
         c, r = int((x - dsm["west"]) / dsm["dx"]), int((y - dsm["north"]) / dsm["dy"])
         z = dsm["z"][r * dsm["w"] + c] if 0 <= c < dsm["w"] and 0 <= r < dsm["h"] else None
         picks[g["name"]] = [g["lat"], lon, z if z is not None else dsm["fill"]]
-    (out / "gcp" / "picks.json").write_text(json.dumps({"picks": picks, "geo": data["geo"],
+    (out / "targets" / "located_targets.json").write_text(json.dumps({"picks": picks, "geo": data["geo"],
                                                          "scene_transform": data["scene_transform"]}))
     second = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=1800)
     log = second.stdout + second.stderr
     assert second.returncode == 0, log[-3000:]
     assert "Georeference corrected with 3 picked targets" in log
     assert "Reusing the trained splat" in log
-    report = json.loads((out / "gcp" / "report.json").read_text())
+    report = json.loads((out / "targets" / "report.json").read_text())
     shifts = [v[0] for v in report["shift_before_m"].values()]
     assert all(abs(s + 1.0) < 0.05 for s in shifts), shifts      # the 1 m east offset is removed
     assert json.loads((out / "geo.json").read_text())["georeferencing"].startswith("GCPs")

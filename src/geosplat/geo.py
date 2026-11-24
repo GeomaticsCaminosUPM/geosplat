@@ -55,9 +55,16 @@ class GeoConfig:
             (``ortho_targets/``), e.g. a nadir flight flown for the targets. Its
             GCP files are the only ones used. ``None``: all photos and all GCP
             files. fast_orto and the final orthophoto always use all photos.
-        picks: JSON file with targets located on the orthophoto (saved by
-            ``gcp/picker.html`` or the notebook). ``None`` uses
-            ``<output>/gcp/picks.json`` if it exists. The picks correct the
+        ortho_max_angle: Orthophotos use a photo for a ground spot only if it
+            looks at it within this angle from vertical (degrees). Spots seen
+            only more obliquely stay empty.
+        ortho_min_resolution: ... and only if the photo sees the ground at least
+            this fraction as finely as the orthophoto pixel (0.5: a photo pixel
+            covers at most 2 orthophoto pixels). Spots seen only more coarsely
+            stay empty.
+        located_targets: JSON file with targets located on the orthophoto (saved by
+            ``targets/locate_targets.html`` or the notebook). ``None`` uses
+            ``<output>/targets/located_targets.json`` if it exists. The picks correct the
             georeference of every product.
     """
 
@@ -73,7 +80,9 @@ class GeoConfig:
     positions_crs: str | None = None
     gpx_time_offset: float | None = None
     targets_orto: str | Path | None = None
-    picks: str | Path | None = None
+    ortho_max_angle: float = 35.0
+    ortho_min_resolution: float = 0.5
+    located_targets: str | Path | None = None
 
 
 @dataclass

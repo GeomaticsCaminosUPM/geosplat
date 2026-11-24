@@ -91,7 +91,7 @@ def prepare_scene(
 
 
 def find_picks(output_dir: str | Path, geo_config: GeoConfig) -> Path | None:
-    """The picks file to apply: ``geo_config.picks`` or ``<output>/gcp/picks.json``.
+    """The picks file to apply: ``geo_config.located_targets`` or ``<output>/targets/located_targets.json``.
 
     Args:
         output_dir: Output folder of the run.
@@ -100,12 +100,12 @@ def find_picks(output_dir: str | Path, geo_config: GeoConfig) -> Path | None:
     Returns:
         Path of the picks file, or ``None``.
     """
-    if geo_config.picks:
-        p = Path(geo_config.picks)
+    if geo_config.located_targets:
+        p = Path(geo_config.located_targets)
         if not p.is_file():
             raise FileNotFoundError(f"Picks file not found: {p}")
         return p
-    p = Path(output_dir) / "gcp" / "picks.json"
+    p = Path(output_dir) / "targets" / "located_targets.json"
     return p if p.is_file() else None
 
 
@@ -114,9 +114,9 @@ def apply_picks(
 ) -> GeoReference:
     """Correct the GPS georeference with targets located on an orthophoto.
 
-    Picks from ``picker.html`` carry the georeference of the orthophoto they
-    were made on and their heights, so they are valid whatever products exist
-    now. Notebook picks (lat/lon only) refer to the GPS georeference and take
+    Picks from ``locate_targets.html`` carry the georeference of the orthophoto they
+    were made on and their heights, so they stay valid when products are
+    regenerated. Notebook picks (lat/lon only) refer to the GPS georeference and take
     heights from the DSM of the run.
 
     Args:
@@ -136,7 +136,7 @@ def apply_picks(
     ref = data.get("geo") if isinstance(data.get("geo"), dict) else None
     st = data.get("scene_transform")
     if st is not None and not np.allclose(np.asarray(st), scene.transform, atol=1e-6):
-        logger.warning("%s was made on a different SfM reconstruction; ignoring it. Pick again on gcp/picker.html.",
+        logger.warning("%s was made on a different SfM reconstruction; ignoring it. Pick again on targets/locate_targets.html.",
                        picks_file)
         return geo
     base = geo
@@ -153,8 +153,8 @@ def apply_picks(
     except ValueError as e:
         logger.warning("Picks not applied: %s", e)
         return geo
-    (output_dir / "gcp").mkdir(parents=True, exist_ok=True)
-    (output_dir / "gcp" / "report.json").write_text(json.dumps(report, indent=2))
+    (output_dir / "targets").mkdir(parents=True, exist_ok=True)
+    (output_dir / "targets" / "report.json").write_text(json.dumps(report, indent=2))
     logger.info("Georeference corrected with %d picked targets (%s): RMSE xy %.3f m, z %.3f m",
                 report["points"], report["method"], report["rmse_xy_m"], report["rmse_z_m"])
     return new_geo
@@ -233,7 +233,7 @@ def images_to_splat(
             geo.json                # georeference (if images have GPS)
             fast_orto/fast_orto.tif # first orthophoto right after SfM (sparse DSM)
             ortho_targets/          # full-resolution orthophoto of geo_config.targets_orto (if set)
-            gcp/picker.html         # locate the targets in a browser -> save gcp/picks.json -> run again
+            targets/locate_targets.html         # locate the targets in a browser -> save targets/located_targets.json -> run again
             ortho/orthophoto.tif    # true orthophoto from the photos
                                     # (CRS-georeferenced with GPS; local frame, no CRS, otherwise)
             ortho/orthophoto_splat.tif, ortho/dsm.tif, ortho/orthophoto_preview.jpg
@@ -300,8 +300,9 @@ def images_to_splat(
         from .ortho import make_fast_orthophoto
 
         t = time.time()
-        fast = make_fast_orthophoto(scene, ortho_frame, output_dir / "fast_orto", geo_config.gsd,
-                                    gcps)
+        fast = make_fast_orthophoto(scene, ortho_frame, output_dir / "fast_orto", geo_config.gsd, gcps,
+                                    max_view_angle=geo_config.ortho_max_angle,
+                                    min_resolution=geo_config.ortho_min_resolution)
         outputs.update({k: v for k, v in fast.items() if isinstance(v, Path)})
         timings["fast_orto"] = time.time() - t
         logger.info("First orthophoto ready: %s", fast["fast_orto"])
@@ -317,8 +318,14 @@ def images_to_splat(
     outputs["splat"] = train.ply_path
     from .viewer import save_viewer
 
-    outputs["viewer"] = save_viewer(train.params, output_dir / "viewer.html", train.train_cameras)
+    from .pointcloud import dense_points_from_splat, processed_region
+
     outputs.update(export_point_clouds(train.params, scene, output_dir, geo, geo_config.dense_min_opacity))
+    outputs["viewer"] = save_viewer(train.params, output_dir / "viewer.html", train.train_cameras,
+                                    points=dense_points_from_splat(train.params, scene, geo_config.dense_min_opacity,
+                                                                   return_index=True),
+                                    region=processed_region(train.params, scene),
+                                    m_per_unit=geo.scale if geo is not None else None)
     timings["point_clouds"] = time.time() - t
 
     splat_ok = train.backend == "gsplat"
@@ -328,7 +335,8 @@ def images_to_splat(
         t = time.time()
         tg = make_targets_orthophoto(scene, ortho_frame, Path(colmap_dir).parent, targets_dir,
                                      output_dir / "ortho_targets", train.params if splat_ok else None,
-                                     train.sh_degree, None, gcps)
+                                     train.sh_degree, None, gcps, max_view_angle=geo_config.ortho_max_angle,
+                                     min_resolution=geo_config.ortho_min_resolution)
         if tg:
             outputs["targets_orto"], outputs["targets_dsm"] = tg["targets_orto"], tg["targets_dsm"]
         timings["targets_orto"] = time.time() - t
@@ -342,6 +350,7 @@ def images_to_splat(
             t = time.time()
             ortho = make_orthophoto(
                 train.params, scene, ortho_frame, output_dir / "ortho", train.sh_degree, geo_config.gsd, gcps,
+                max_view_angle=geo_config.ortho_max_angle, min_resolution=geo_config.ortho_min_resolution,
             )
             outputs.update({k: v for k, v in ortho.items() if isinstance(v, Path)})
             if "gcp_dz" in ortho:
@@ -351,7 +360,7 @@ def images_to_splat(
     if geo is not None and gcps:
         picker = write_picker(output_dir, outputs, gcps, geo, scene, picks_file)
         if picker is not None:
-            outputs["gcp_picker"] = picker
+            outputs["locate_targets"] = picker
 
     timings["total"] = float(np.sum(list(timings.values())))
     (output_dir / "timings.json").write_text(json.dumps(timings, indent=2))
@@ -363,7 +372,7 @@ def write_picker(
     output_dir: Path, outputs: dict[str, Path], gcps: dict[str, np.ndarray], geo: GeoReference, scene: Scene,
     picks_file: Path | None,
 ) -> Path | None:
-    """Write ``gcp/picker.html`` on the sharpest orthophoto of the run.
+    """Write ``targets/locate_targets.html`` on the sharpest orthophoto of the run.
 
     Args:
         output_dir: Output folder.
@@ -385,7 +394,7 @@ def write_picker(
     else:
         return None
     start = None
-    report = output_dir / "gcp" / "report.json"
+    report = output_dir / "targets" / "report.json"
     if picks_file is not None and report.is_file():
         from pyproj import Transformer
 
@@ -394,7 +403,7 @@ def write_picker(
         for n, (x, y, z) in json.loads(report.read_text()).get("picked_xyz_corrected", {}).items():
             lon, lat = to_ll.transform(x, y)
             start[n] = [lat, lon, z]
-    html = save_picker_html(ortho_tif, dsm_tif, gcps, geo, output_dir / "gcp" / "picker.html", start, scene.transform)
-    logger.info("Locate the targets in %s, save picks.json next to it and run again to correct the georeference.",
+    html = save_picker_html(ortho_tif, dsm_tif, gcps, geo, output_dir / "targets" / "locate_targets.html", start, scene.transform)
+    logger.info("Locate the targets in %s, save located_targets.json next to it and run again to correct the georeference.",
                 html)
     return html

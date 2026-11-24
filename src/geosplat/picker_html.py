@@ -1,10 +1,10 @@
 """Stand-alone HTML page to locate ground control points on an orthophoto.
 
-:func:`save_picker_html` writes ``picker.html`` (plus a folder of orthophoto
+:func:`save_picker_html` writes ``locate_targets.html`` (plus a folder of orthophoto
 tiles). Open it in any browser, no Python needed:
 
 1. Choose a point in the list, click its target on the orthophoto (drag to adjust).
-2. Press **Save picks.json** and save it next to the page (``<output>/gcp/picks.json``).
+2. Press **Save located_targets.json** and save it next to the page (``<output>/targets/located_targets.json``).
 3. Run the same command again: the picks correct the georeference of every
    product (SfM and the trained splat are reused).
 
@@ -48,7 +48,8 @@ def _to_3857(src_path: Path, max_size: int, resampling: str = "bilinear") -> tup
         dst = np.full((src.count, height, width), nodata, dtype=src.dtypes[0])
         for b in range(src.count):
             reproject(rasterio.band(src, b + 1), dst[b], src_transform=src.transform, src_crs=src.crs,
-                      dst_transform=transform, dst_crs="EPSG:3857", src_nodata=src.nodata, dst_nodata=nodata,
+                      dst_transform=transform, dst_crs="EPSG:3857", src_nodata=src.nodata,
+                      dst_nodata=src.nodata,           # None for RGBA: transparency comes from the alpha band
                       resampling=getattr(Resampling, resampling))
     return dst, transform, nodata
 
@@ -151,14 +152,14 @@ def save_picker_html(
         "tiles": tiles, "bounds": full_bounds, "gcps": points, "dsm": dsm_info,
         "picks": picks or {}, "geo": ref, "ortho": Path(ortho_tif).name,
         "scene_transform": None if scene_transform is None else np.asarray(scene_transform).tolist(),
-        "save_to": str((html_path.parent / "picks.json").resolve()), "key": str(html_path.resolve()),
+        "save_to": str((html_path.parent / "located_targets.json").resolve()), "key": str(html_path.resolve()),
     }
     html_path.write_text(_PAGE.replace("/*DATA*/null", json.dumps(data)), encoding="utf-8")
     return html_path
 
 
 def picks_heights(data: dict) -> dict[str, tuple[float, ...]]:
-    """Picks of a saved ``picks.json`` (page or notebook format).
+    """Picks of a saved ``located_targets.json`` (page or notebook format).
 
     Args:
         data: Parsed JSON: ``{"picks": {name: [lat, lon, h]}, "geo": ...}`` from
@@ -194,10 +195,10 @@ _PAGE = r"""<!DOCTYPE html>
 <div id="wrap"><div id="side">
  <b>Locate the targets</b><br>
  <small>1. Choose a point. 2. Click its target on the orthophoto (drag to adjust).
- 3. <b>Save</b> as <code>picks.json</code> in the folder of this page, then run the same command again.
+ 3. <b>Save</b> as <code>located_targets.json</code> in the folder of this page, then run the same command again.
  Red circles: target coordinates with the current georeference. Pink ✕: your picks. 3+ points: full fit.</small>
  <div id="list"></div>
- <button id="save">Save picks.json</button>
+ <button id="save">Save located_targets.json</button>
  <button id="clear">Clear all</button>
  <small id="status"></small>
  <label>Orthophoto opacity <input id="oop" type="range" min="0" max="1" step="0.05" value="1"></label>
@@ -298,7 +299,7 @@ document.getElementById("save").onclick = async () => {
   const text = payload();
   if (window.showSaveFilePicker) {
     try {
-      const h = await showSaveFilePicker({suggestedName: "picks.json",
+      const h = await showSaveFilePicker({suggestedName: "located_targets.json",
         types: [{description: "JSON", accept: {"application/json": [".json"]}}]});
       const w = await h.createWritable(); await w.write(text); await w.close();
       document.getElementById("status").textContent = "Saved " + h.name + ". Run the same command again.";
@@ -307,8 +308,8 @@ document.getElementById("save").onclick = async () => {
   }
   const a = document.createElement("a");
   a.href = URL.createObjectURL(new Blob([text], {type: "application/json"}));
-  a.download = "picks.json"; a.click();
-  document.getElementById("status").textContent = "Downloaded picks.json: move it to " + D.save_to;
+  a.download = "located_targets.json"; a.click();
+  document.getElementById("status").textContent = "Downloaded located_targets.json: move it to " + D.save_to;
 };
 // Start from this browser's last session of this page, else from the saved picks.
 let start = D.picks;

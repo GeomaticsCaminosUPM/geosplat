@@ -47,10 +47,10 @@ CSV files have no CRS: set `--gcps-crs` / `GCPS_CRS`, or let geosplat infer it f
 GCP files are merged, and duplicates (same point, with or without a name) are removed. With `targets_orto`, only the
 files inside that folder are used.
 
-## `picks.json` (targets located on the orthophoto)
+## `located_targets.json` (targets located on the orthophoto)
 
-Written by `gcp/picker.html` (button **Save picks.json**) or by the notebook. Default place: `<output>/gcp/picks.json`;
-`--picks FILE` uses another one.
+Written by `targets/locate_targets.html` (button **Save located_targets.json**) or by the notebook. Default place: `<output>/targets/located_targets.json`;
+`--located-targets FILE` uses another one.
 
 ```json
 {

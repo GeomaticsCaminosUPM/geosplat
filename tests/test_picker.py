@@ -94,7 +94,7 @@ def test_refine_with_page_picks_heights() -> None:
 def test_picker_html_and_saved_picks(tmp_path: Path) -> None:
     """The page embeds tiles, GCPs, the DSM and the georeference; saved picks load in both formats."""
     ortho, dsm = _rasters(tmp_path)
-    html = save_picker_html(ortho, dsm, GCPS, _geo(), tmp_path / "gcp" / "picker.html",
+    html = save_picker_html(ortho, dsm, GCPS, _geo(), tmp_path / "targets" / "locate_targets.html",
                             picks={"A": [40.6, -4.0, 830.0]}, scene_transform=np.eye(4))
     text = html.read_text()
     data = json.loads(text.split("const D = ")[1].split(";\nconst KEY")[0])

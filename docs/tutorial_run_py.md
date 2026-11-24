@@ -28,7 +28,7 @@ Open the results:
 | --- | --- |
 | `fast_orto/fast_orto.tif`, `ortho/orthophoto.tif`, `ortho/dsm.tif` | QGIS (drag and drop) |
 | `points_dense.ply` | CloudCompare |
-| `viewer.html` | any browser |
+| `viewer.html` | any browser: splats or point cloud, RGB or classes (solid / ground vegetation / trees) |
 | `splat.ply` | <https://superspl.at/editor> |
 
 Then try a better preset: `--preset fast` (previews) or `--preset medium` (good results).
@@ -61,15 +61,15 @@ Both text files are found and recognised automatically. Any file names work.
 The run ends with:
 
 ```
-Targets: open .../output_very_fast/gcp/picker.html, save .../gcp/picks.json (not found yet) and run this command again.
+Targets: open .../output_very_fast/targets/locate_targets.html, save .../targets/located_targets.json (not found yet) and run this command again.
 ```
 
-1. Open `gcp/picker.html` in a browser (double-click it). The orthophoto sits on Google Satellite. Red circles mark
+1. Open `targets/locate_targets.html` in a browser (double-click it). The orthophoto sits on Google Satellite. Red circles mark
    where the surveyed coordinates fall with the current (GPS) georeference.
 2. Choose a point in the list (it starts with the first one) and click the centre of its target on the orthophoto.
    A pink ✕ appears and the next point is selected. Drag a ✕ to adjust it; ✖ in the list deletes it. Zoom in for
    precision. Place at least 3 points for a full fit (1–2 only shift the georeference).
-3. Press **Save picks.json**. Save it in the `gcp/` folder next to the page; in Firefox and Safari it goes to
+3. Press **Save located_targets.json**. Save it in the `targets/` folder next to the page; in Firefox and Safari it goes to
    Downloads, so move it there.
 4. Run the same command again:
 
@@ -83,8 +83,8 @@ Reusing the trained splat .../splat.ply (same scene and training options)
 ```
 
 SfM and training are reused, so the second run takes seconds. Every product (orthophotos, DSM, point clouds,
-`geo.json`) now uses the GCPs. `gcp/report.json` lists the residuals; `ortho/gcp_check.json` gives DSM height
-minus GCP height. The page now shows your picks in the corrected frame. Adjust them, save, and run again if needed.
+`geo.json`) uses the GCPs. `targets/report.json` lists the residuals; `ortho/gcp_check.json` gives DSM height
+minus GCP height. The page shows your picks in the corrected frame. Adjust them, save, and run again if needed.
 
 ## 4. Several flights: a separate flight for the targets (`--targets-orto`)
 
@@ -96,7 +96,7 @@ uv run python examples/run.py /data/survey --preset fast --targets-orto "nadir f
 ```
 
 - `ortho_targets/orthophoto.tif`: orthophoto from that folder's photos only, at the **full resolution of the
-  original photos**. `gcp/picker.html` uses it.
+  original photos**. `targets/locate_targets.html` uses it.
 - Only the GCP files inside that folder are used; target files elsewhere (other campaigns) are ignored.
 - `fast_orto/` and `ortho/` still use all photos.
 

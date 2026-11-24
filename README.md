@@ -16,7 +16,7 @@ images/ ─► COLMAP SfM (GPU) ─► georeference (EXIF GPS) ─► fast_orto/
 ```
 
 Without GPS, orthophotos are produced in a local frame (no CRS, SfM units). With ground control points, locate
-the targets on the orthophoto in `gcp/picker.html` and run again: every product is corrected.
+the targets on the orthophoto in `targets/locate_targets.html` and run again: every product is corrected.
 
 **Tutorials** on public sample data (nothing of your own needed): [run.py](docs/tutorial_run_py.md) ·
 [notebook](docs/tutorial_notebook.md) · [input files](docs/input_files.md).
@@ -82,14 +82,14 @@ If the input folder is already an undistorted COLMAP project (it has `images/` a
 ```
 output/
 ├── splat.ply                  # Gaussian splat (3DGS format) → SuperSplat / any 3DGS viewer
-├── viewer.html                # interactive splat viewer: open in a browser
+├── viewer.html                # interactive viewer (splats / point cloud, RGB / classes): open in a browser
 ├── points_sparse.ply          # SfM tie points (colored)
 ├── points_dense.ply           # dense colored points (centers of solid Gaussians)
 ├── geo.json                   # georeference: CRS, origin, scene→CRS transform, GPS fit RMSE
 ├── ortho_targets/             # with targets_orto: full-resolution orthophoto of that flight (+ dsm.tif)
-├── gcp/                       # with GCPs and positions:
-│   ├── picker.html            #   locate the targets in a browser, "Save picks.json"
-│   ├── picks.json             #   your picks (saved by the page); applied when you run again
+├── targets/                     # with GCPs and positions:
+│   ├── locate_targets.html            #   locate the targets in a browser, "Save located_targets.json"
+│   ├── located_targets.json             #   your picks (saved by the page); applied when you run again
 │   └── report.json            #   GCP fit: method, residuals, RMSE
 ├── fast_orto/                 # FIRST orthophoto, seconds after COLMAP (before training)
 │   ├── fast_orto.tif          # photos orthorectified on a DSM interpolated from SfM points
@@ -172,6 +172,8 @@ Individual settings, for fine control (each one overrides the preset):
 | `TrainConfig(sh_degree=1)` / `--sh-degree 1` | Less view-dependent color; fewer parameters |
 | `TrainConfig(early_stop=True)` / `--early-stop` | Stop once held-out PSNR plateaus (checked after densification) |
 | `GeoConfig(gsd=0.05)` / `--gsd 0.05` | Coarser orthophoto (fewer pixels) |
+| `GeoConfig(ortho_max_angle=35)` / `--ortho-max-angle 35` | Orthophotos use a photo for a ground spot only within this angle from vertical; spots seen only more obliquely stay empty |
+| `GeoConfig(ortho_min_resolution=0.5)` / `--ortho-min-resolution 0.5` | ... and only if the photo sees it at least this fraction as finely as the orthophoto pixel; coarser spots stay empty |
 | `GeoConfig(dense_min_opacity=0.5)` / `--dense-min-opacity 0.5` | Opacity threshold for `points_dense.ply` (default `"auto"`: Otsu on the opacity histogram; higher = fewer, cleaner points) |
 | `progressive_resolution=True` (default) | Coarse-to-fine: first 10 % of steps at 1/4 resolution, next 15 % at 1/2 |
 | `selective_adam=True` (default) | Fused CUDA optimizer that only updates Gaussians visible in the current view |
@@ -243,7 +245,39 @@ public sample. To run it locally: `uv run --group dev jupyter lab examples/run.i
 
 - `viewer.html` (written next to `splat.ply`): double-click it to open it in a browser. Drag to orbit,
   right-drag to pan, use the wheel to zoom. It needs internet access to load the WebGL viewer library.
-- In a notebook: `geosplat.show(result.params, result.train_cameras)`, or `geosplat.show("output/splat.ply")`.
+- In a notebook: `plots.splat(result.params, result.train_cameras, scene=scene)`, or
+  `geosplat.show("output/splat.ply")` (splats only).
+
+Buttons at the top left:
+
+- **Splats** / **Point cloud**: the Gaussian splat, or the dense points (one per solid Gaussian, the same points as
+  `points_dense.ply`) with a **point size** slider.
+- **RGB** / **Classes**: reconstructed colors, or class colors blended over them (**opacity** slider). Only the
+  reconstructed area is classified; the far background and horizon keep their colors. Two tabs:
+  - **Objects**: one color per object standing on the ground (each tree, building, wall, car…). The terrain is
+    the morphological opening of the lowest Gaussians over 15 m. What stands above it is grouped into connected
+    3D clusters of voxels whose size follows the Gaussians (so sparse and dense splats behave alike); a voxel counts
+    when its Gaussians hold enough opacity (Otsu threshold of the scene), so the semi-transparent fuzz of the
+    splat does not join objects to the ground.
+  - **Trees**: **bare ground**, **ground vegetation**, **trees** and **structures**. Objects standing on the
+    terrain are trees unless their **structure score** is high. The score uses all the information in the splat:
+    every object is described by the distribution of its Gaussians' opacity and translucency, view-dependent color,
+    size, flatness and elongation, surface orientation, brightness texture, greenness, scatter and normal coherence
+    of their neighbourhood at three sizes, and the object's height. Objects that clearly look like structures
+    (opaque, view-independent, on a thin coherent layer) or like trees (translucent, view-dependent, scattered) train
+    a regularized logistic regression on all those features; the score is the mean of its probability and that cue
+    evidence. Trees with or without leaves are found the same way; color alone never makes a structure. Sliders:
+    - *structures*: the score an object needs to be a structure; move right for fewer structures and more trees
+      (default 70 %);
+    - *grass*: on the ground, greenness (2G − R − B) at or above it is ground vegetation, below it bare ground
+      (default: Otsu threshold over the ground).
+
+    Each slider row has an **i** button that shows what it does.
+
+    Classes are as detailed as the splat: the `medium` and `quality` presets separate them much better than
+    `very_fast`.
+
+  The point cloud updates while a slider moves; the splats update when it is released (a second or two).
 
 ### The Gaussian splat: SuperSplat in the browser (nothing to install)
 
@@ -282,6 +316,12 @@ For GPS imagery two orthophotos are produced:
    and edges can smear. Use it for a first check of coverage and georeferencing.
 2. **`ortho/orthophoto.tif`**, after splat training. It uses the dense surface of the splat and occlusion-aware view
    selection: a true orthophoto, together with `ortho/dsm.tif`.
+
+Each ground pixel comes from the photos with the finest ground resolution there (focal length × cos(view angle) /
+distance), so close nadir photos are preferred over oblique, horizon or video views. The photos are projected on the
+splat depth where SfM points support it (within 1 m) or where it lies within 1 m of the SfM-point surface, and on
+the SfM-point surface elsewhere. Spots seen only by oblique (> 35° from vertical) or coarse photos stay empty
+(transparent) rather than filled with a poor image; see `--ortho-max-angle` and `--ortho-min-resolution`.
 
 Open `fast_orto/fast_orto.tif`, `ortho/orthophoto.tif` and `ortho/dsm.tif` in QGIS (drag and drop; the CRS is embedded). For the DSM, use
 **Layer Properties ▸ Symbology ▸ Singleband pseudocolor**, or **Raster ▸ Analysis ▸ Hillshade**. Overlay your GCPs
@@ -335,10 +375,10 @@ sometimes tens of meters vertically (barometric altitude). The internal geometry
 
 **Locating the targets** corrects that error:
 
-1. A run with GCPs writes `gcp/picker.html`. Open it in a browser, click each target on the orthophoto (pink ✕,
-   draggable; 3+ points for a 7-parameter fit, 1–2 for a shift) and press **Save picks.json** into `gcp/`.
+1. A run with GCPs writes `targets/locate_targets.html`. Open it in a browser, click each target on the orthophoto (pink ✕,
+   draggable; 3+ points for a 7-parameter fit, 1–2 for a shift) and press **Save located_targets.json** into `targets/`.
 2. Run the same command again. The picks correct the georeference of every product; SfM and the trained splat are
-   reused, so it takes seconds. `gcp/report.json` has the residuals.
+   reused, so it takes seconds. `targets/report.json` has the residuals.
 
 In the notebook the same step is section 7. The picks file is shared, so `run.py` applies notebook picks too.
 
@@ -359,6 +399,8 @@ from another season or year may not be, and the run then warns that its targets 
 - 30–200 sharp photos with 60–80 % overlap; move around the subject rather than rotating in place.
 - Keep exposure fixed and avoid moving objects; reflective and textureless surfaces are hard.
 - Drone mapping: 70–80 % front and side overlap. Add a ring of oblique photos for 3D views.
+- Orthophotos need **nadir** photos; oblique and horizon photos mainly serve the 3D model.
+- Photos from different seasons or years rarely match each other; process them separately.
 - Out of GPU memory: lower `max_resolution` (e.g. 1000) or set `max_gaussians`.
 
 ## Tests
@@ -383,15 +425,16 @@ downloaded they also check the picks round trip: saved picks correct the georefe
 | `sources.py` | Dataset scan (subfolders, videos, side files, ignored folders), frame extraction, catalogue |
 | `positions.py` | Photo positions from EXIF, XMP, geo.txt / CSV, vector files, DJI MRK, GPX |
 | `gcp.py` | Notebook GCP picker, georeference refit from picks |
-| `picker_html.py` | Stand-alone `gcp/picker.html` page |
+| `picker_html.py` | Stand-alone `targets/locate_targets.html` page |
 | `datasets.py` | Sample downloads (`seneca`, `south_building`, `aerial_gcps`), zip handling |
 | `trainer.py` | Optimization loop, densification (default / MCMC), metrics |
 | `render.py` | gsplat CUDA backend (pinhole/ortho, RGB/depth) + PyTorch fallback |
 | `gaussians.py` | Initialization, background sphere, splat PLY export/import |
 | `pointcloud.py` | Sparse / dense colored point clouds |
+| `classify.py` | Per-Gaussian features (solid / ground vegetation / trees) and automatic thresholds |
 | `ortho.py` | Orthophoto from photos and from the splat, targets orthophoto, DSM, GeoTIFF |
 | `video.py` | Camera paths, GIF export |
-| `viewer.py` | Interactive WebGL splat viewer (`show`, `save_viewer`) |
+| `viewer.py` | Interactive WebGL viewer: splats / point cloud, RGB / classes (`show`, `save_viewer`) |
 | `mapview.py` | Notebook maps: photo positions with polygon selection, orthophoto overlay |
 | `presets.py` | Speed presets (`very_fast`, `fast`, `medium`, `quality`), `make_configs` |
 | `pipeline.py` | `images_to_splat`, end to end |

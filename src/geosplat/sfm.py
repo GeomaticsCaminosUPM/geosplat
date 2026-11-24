@@ -196,6 +196,66 @@ def _largest_reconstruction(recs: dict[int, pycolmap.Reconstruction]) -> pycolma
     return max(recs.values(), key=lambda r: r.num_reg_images())
 
 
+class _DbProgress:
+    """Progress bar fed by polling the COLMAP database while a stage runs in COLMAP.
+
+    COLMAP's own log prints one block per image; geosplat silences it and shows
+    one bar per stage instead.
+    """
+
+    def __init__(self, database: Path, query: str, total: int | None, desc: str) -> None:
+        """Start polling.
+
+        Args:
+            database: COLMAP ``database.db``.
+            query: SQL returning one count (e.g. images with keypoints).
+            total: Expected final count (``None``: unknown).
+            desc: Bar label.
+        """
+        import threading
+
+        from tqdm.auto import tqdm
+
+        self.database, self.query = database, query
+        self.bar = tqdm(total=total, desc=desc, unit="img" if "keypoints" in query else "pair", leave=True)
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._poll, daemon=True)
+        self.thread.start()
+
+    def _count(self) -> int:
+        """Current count in the database.
+
+        Returns:
+            Rows counted by the query (0 if the database is busy).
+        """
+        import sqlite3
+
+        try:
+            with sqlite3.connect(f"file:{self.database}?mode=ro", uri=True, timeout=0.2) as con:
+                return int(con.execute(self.query).fetchone()[0])
+        except sqlite3.Error:
+            return self.bar.n
+
+    def _poll(self) -> None:
+        """Update the bar twice per second until stopped."""
+        while not self.stop.wait(0.5):
+            self.bar.update(max(0, self._count() - self.bar.n))
+
+    def close(self) -> None:
+        """Stop polling and finish the bar."""
+        self.stop.set()
+        self.thread.join()
+        self.bar.update(max(0, self._count() - self.bar.n))
+        self.bar.close()
+
+
+def _quiet_colmap() -> None:
+    """Show only COLMAP errors, unless geosplat logs at DEBUG level (``--verbose``)."""
+    import pycolmap
+
+    pycolmap.logging.minloglevel = 0 if logger.isEnabledFor(logging.DEBUG) else 2
+
+
 def run_sfm(image_dir: str | Path, work_dir: str | Path, config: SfMConfig | None = None) -> Path:
     """Run the full COLMAP pipeline on a folder of images.
 
@@ -282,11 +342,15 @@ def run_sfm(image_dir: str | Path, work_dir: str | Path, config: SfMConfig | Non
         camera_mode = pycolmap.CameraMode.PER_FOLDER   # each photo folder / video has its own camera
     else:
         camera_mode = pycolmap.CameraMode.SINGLE if config.single_camera else pycolmap.CameraMode.AUTO
-    logger.info("Extracting features...")
-    pycolmap.extract_features(
-        database, images, camera_mode=camera_mode, reader_options=reader,
-        extraction_options=extraction, device=device,
-    )
+    _quiet_colmap()
+    bar = _DbProgress(database, "SELECT COUNT(*) FROM keypoints", n_images, "COLMAP features")
+    try:
+        pycolmap.extract_features(
+            database, images, camera_mode=camera_mode, reader_options=reader,
+            extraction_options=extraction, device=device,
+        )
+    finally:
+        bar.close()
 
     matcher = config.matcher
     if matcher == "auto":
@@ -295,7 +359,53 @@ def run_sfm(image_dir: str | Path, work_dir: str | Path, config: SfMConfig | Non
         # Spatial matching only pairs images with GPS in their EXIF: use it only if all have it.
         with_gps = sum(e["kind"] == "photo" and read_gps(e["source"]) is not None for e in catalogue.values())
         matcher = "spatial" if with_gps == n_images and n_images >= 3 else "exhaustive"
-    logger.info("Matching features (%s)...", matcher)
+    total = n_images * (n_images - 1) // 2 if matcher == "exhaustive" else None
+    bar = _DbProgress(database, "SELECT COUNT(*) FROM two_view_geometries", total, f"COLMAP matching ({matcher})")
+    try:
+        _match(pycolmap, database, device, matcher, config)
+    finally:
+        bar.close()
+
+    sparse = work_dir / "sparse"
+    sparse.mkdir(exist_ok=True)
+    if config.mapper == "global":
+        logger.info("COLMAP global mapping...")
+        recs = pycolmap.global_mapping(database, images, sparse)
+    elif config.mapper == "incremental":
+        from tqdm.auto import tqdm
+
+        options = pycolmap.IncrementalPipelineOptions()
+        options.ba_use_gpu = use_cuda
+        with tqdm(total=n_images, desc="COLMAP registered", unit="img") as reg:
+            recs = pycolmap.incremental_mapping(database, images, sparse, options,
+                                                initial_image_pair_callback=lambda: reg.update(2),
+                                                next_image_callback=lambda: reg.update(1))
+    else:
+        raise ValueError(f"Unknown mapper {config.mapper!r}")
+    rec = _largest_reconstruction(recs)
+    logger.info("Registered %d/%d images, %d 3D points", rec.num_reg_images(), n_images, rec.num_points3D())
+    best = sparse / "best"
+    best.mkdir(exist_ok=True)
+    rec.write(best)
+
+    logger.info("Undistorting images...")
+    pycolmap.undistort_images(undistorted, best, images)
+    return undistorted
+
+
+def _match(pycolmap: object, database: Path, device: object, matcher: str, config: SfMConfig) -> None:
+    """Run the chosen COLMAP matcher.
+
+    Args:
+        pycolmap: The pycolmap module.
+        database: COLMAP database.
+        device: ``pycolmap.Device``.
+        matcher: ``"spatial"``, ``"sequential"`` or ``"exhaustive"``.
+        config: SfM options (neighbour counts).
+
+    Raises:
+        ValueError: For an unknown matcher.
+    """
     if matcher == "spatial":
         pairing = pycolmap.SpatialPairingOptions()
         pairing.max_num_neighbors = config.spatial_neighbors
@@ -308,24 +418,3 @@ def run_sfm(image_dir: str | Path, work_dir: str | Path, config: SfMConfig | Non
         pycolmap.match_exhaustive(database, device=device)
     else:
         raise ValueError(f"Unknown matcher {matcher!r}")
-
-    logger.info("Running %s mapping...", config.mapper)
-    sparse = work_dir / "sparse"
-    sparse.mkdir(exist_ok=True)
-    if config.mapper == "global":
-        recs = pycolmap.global_mapping(database, images, sparse)
-    elif config.mapper == "incremental":
-        options = pycolmap.IncrementalPipelineOptions()
-        options.ba_use_gpu = use_cuda
-        recs = pycolmap.incremental_mapping(database, images, sparse, options)
-    else:
-        raise ValueError(f"Unknown mapper {config.mapper!r}")
-    rec = _largest_reconstruction(recs)
-    logger.info("Registered %d/%d images, %d 3D points", rec.num_reg_images(), n_images, rec.num_points3D())
-    best = sparse / "best"
-    best.mkdir(exist_ok=True)
-    rec.write(best)
-
-    logger.info("Undistorting images...")
-    pycolmap.undistort_images(undistorted, best, images)
-    return undistorted

@@ -17,8 +17,8 @@ JSON file (``--config``, or ``<dataset>/config.json``) can hold defaults::
 Priority: command line > config file > preset > defaults.
 
 Ground control points: with GPS photos and a GCP file, the run writes
-``<output>/gcp/picker.html``. Open it in a browser, click each target on the
-orthophoto, press "Save picks.json" and save it next to the page. Run the same
+``<output>/targets/locate_targets.html``. Open it in a browser, click each target on the
+orthophoto, press "Save located_targets.json" and save it next to the page. Run the same
 command again: the picks correct the georeference of every product; SfM and the
 trained splat are reused, so this takes a fraction of the first run.
 
@@ -105,7 +105,7 @@ def load_config_file(dataset_dir: Path, config: str | None) -> dict:
     if not path.is_file():
         return {}
     cfg = json.loads(path.read_text())
-    for section, key in (("sfm", "polygon"), ("geo", "gcps"), ("geo", "picks")):
+    for section, key in (("sfm", "polygon"), ("geo", "gcps"), ("geo", "located_targets")):
         value = cfg.get(section, {}).get(key)
         if value and not Path(value).is_absolute():
             cfg[section][key] = str((path.parent / value).resolve())
@@ -135,8 +135,8 @@ def main() -> None:
     print(f"{'metrics':>18}: {result.metrics}")
     print(f"{'timings (s)':>18}: { {k: round(v, 1) for k, v in result.timings.items()} }")
     print("Open viewer.html in a browser, splat.ply in https://superspl.at/editor, the .tif files in QGIS.")
-    if "gcp_picker" in result.outputs:
-        picks = out_dir / "gcp" / "picks.json"
+    if "locate_targets" in result.outputs:
+        picks = out_dir / "targets" / "located_targets.json"
         applied = result.geo is not None and "GCPs" in str(result.geo.extra.get("georeferencing", ""))
         state = "applied in this run" if applied else "not found yet"
         print(f"Targets: open {result.outputs['gcp_picker']}, save {picks} ({state}) and run this command again.")

@@ -30,7 +30,7 @@ class GCPPicker:
             (and loaded from, if it exists).
         height: Map height (CSS).
         geo: Georeference the orthophoto was made with. With ``dsm_tif``, picks
-            are saved in the ``picker.html`` format (with heights), so
+            are saved in the ``locate_targets.html`` format (with heights), so
             ``examples/run.py`` can apply them too.
         dsm_tif: DSM made with ``geo``.
     """
@@ -177,7 +177,7 @@ class GCPPicker:
             self.picks_file.write_text(json.dumps(self._payload(), indent=2))
 
     def _payload(self) -> dict:
-        """Picks to save: ``picker.html`` format if the georeference and DSM are known.
+        """Picks to save: ``locate_targets.html`` format if the georeference and DSM are known.
 
         Returns:
             ``{"picks": {name: [lat, lon, h]}, "geo": {...}}`` or ``{name: [lat, lon]}``.
@@ -218,7 +218,7 @@ class GCPPicker:
 
 
 def load_picks(path: str | Path) -> dict[str, tuple[float, ...]]:
-    """Load picks saved by :class:`GCPPicker` or by ``gcp/picker.html``.
+    """Load picks saved by :class:`GCPPicker` or by ``targets/locate_targets.html``.
 
     Args:
         path: JSON file.
@@ -247,7 +247,7 @@ def refine_georeference(
     Args:
         geo: Current georeference (from photo GPS).
         picks: ``{name: (lat, lon)}`` from :class:`GCPPicker`, or
-            ``{name: (lat, lon, height)}`` from ``picker.html`` (height already
+            ``{name: (lat, lon, height)}`` from ``locate_targets.html`` (height already
             known, no DSM needed).
         gcps: ``{name: [x, y, z]}`` in ``geo.crs``.
         dsm_tif: DSM GeoTIFF made with ``geo`` (``ortho/dsm.tif`` or
