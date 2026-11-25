@@ -31,7 +31,7 @@ PRESETS: dict[str, dict[str, dict[str, Any]]] = {
             "iterations": 1000, "max_resolution": 800, "max_gaussians": 150_000, "sh_degree": 1,
             "sh_degree_interval": 300, "refine_start_iter": 200, "refine_every": 50,
         },
-        "geo": {},
+        "geo": {"ortho_fullres": False},
     },
     "fast": {
         "sfm": {"max_image_size": 1200, "video_frames": 30},

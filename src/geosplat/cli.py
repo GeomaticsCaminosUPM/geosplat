@@ -57,6 +57,9 @@ def add_options(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     tr.add_argument("--max-resolution", type=int, default=None, help="Longest training side (px).")
     tr.add_argument("--sh-degree", type=int, default=None, help="Spherical harmonics degree (0-3).")
     tr.add_argument("--max-gaussians", type=int, default=None, help="Cap the number of Gaussians (MCMC strategy).")
+    tr.add_argument("--flatten", type=float, default=None, metavar="WEIGHT",
+                    help="Make Gaussians flat discs on the surfaces (sharper walls for orthophoto / point cloud); "
+                         "e.g. 100. Default 0 (off).")
     tr.add_argument("--early-stop", action="store_true", default=None, help="Stop when held-out PSNR stops improving.")
     tr.add_argument("--no-progressive", action="store_true", help="Disable coarse-to-fine resolution schedule.")
     tr.add_argument("--no-selective-adam", action="store_true", help="Use plain Adam instead of SelectiveAdam.")
@@ -79,6 +82,10 @@ def add_options(p: argparse.ArgumentParser) -> argparse.ArgumentParser:
     geo.add_argument("--located-targets", default=None,
                      help="Targets located on the orthophoto (located_targets.json from targets/locate_targets.html) to correct the "
                           "georeference (default: <output>/targets/located_targets.json if it exists).")
+    geo.add_argument("--ortho-photos", nargs="+", default=None, metavar="FOLDER",
+                     help="Folders whose photos build the orthophotos (e.g. one date's flights); default: all photos.")
+    geo.add_argument("--no-ortho-fullres", action="store_true",
+                     help="Build the orthophoto from the SfM-size photos instead of the originals (faster, blurrier walls).")
     geo.add_argument("--ortho-max-angle", type=float, default=None,
                      help="Orthophotos: largest view angle from vertical (degrees) of a usable photo; "
                           "spots seen only more obliquely stay empty (default 35).")
@@ -128,14 +135,14 @@ def configs_from_args(
     cli_train = dict(
         iterations=a.iterations, max_resolution=a.max_resolution, sh_degree=a.sh_degree,
         max_gaussians=a.max_gaussians, test_every=a.test_every, backend=a.backend, device=a.device,
-        early_stop=a.early_stop, progressive_resolution=off(a.no_progressive),
+        early_stop=a.early_stop, progressive_resolution=off(a.no_progressive), flatten_weight=a.flatten,
         selective_adam=off(a.no_selective_adam), seed=a.seed,
         background_points=0 if a.no_background_sphere else None,
     )
     cli_geo = dict(
         enabled=off(a.no_geo), crs=a.crs, ortho=off(a.no_ortho), fast_orto=off(a.no_fast_orto), gsd=a.gsd, gcps=a.gcps, gcps_crs=a.gcps_crs,
         positions=a.positions, positions_crs=a.positions_crs, gpx_time_offset=a.gpx_offset,
-        dense_min_opacity=a.dense_min_opacity, targets_orto=a.targets_orto, ortho_max_angle=a.ortho_max_angle,
+        dense_min_opacity=a.dense_min_opacity, targets_orto=a.targets_orto, ortho_max_angle=a.ortho_max_angle, ortho_fullres=off(a.no_ortho_fullres), ortho_photos=a.ortho_photos,
         ortho_min_resolution=a.ortho_min_resolution, located_targets=a.located_targets,
     )
 

@@ -162,6 +162,7 @@ def splat(
     scene: object | None = None,
     min_opacity: float | str = "auto",
     geo: object | None = None,
+    points: tuple | None = None,
 ) -> object:
     """Interactive 3D viewer of a Gaussian splat (drag: orbit, right-drag: pan, wheel: zoom).
 
@@ -178,17 +179,21 @@ def splat(
         scene: The training scene, to add the dense point cloud view.
         min_opacity: Opacity threshold of the dense points (as ``dense_min_opacity``).
         geo: Georeference, for object sizes in meters (optional).
+        points: Dense point cloud ``(xyz, rgb, index)`` from
+            :func:`geosplat.pointcloud.dense_point_cloud`; ``None`` computes it
+            (with splat colors) from ``scene``.
 
     Returns:
         HTML display object (shown when it is the last expression of a cell).
     """
     from .viewer import show
 
-    points = region = None
+    region = None
     if scene is not None and not isinstance(params, (str, Path)):
-        from .pointcloud import dense_points_from_splat, processed_region
+        from .pointcloud import dense_point_cloud, processed_region
 
-        points = dense_points_from_splat(params, scene, min_opacity, return_index=True)  # type: ignore[arg-type]
+        if points is None:
+            points = dense_point_cloud(params, scene, min_opacity, geo, photo_colors=False)  # type: ignore[arg-type]
         region = processed_region(params, scene)  # type: ignore[arg-type]
     return show(params, cameras, max_splats, height, points=points, region=region,  # type: ignore[arg-type]
                 m_per_unit=getattr(geo, "scale", None))

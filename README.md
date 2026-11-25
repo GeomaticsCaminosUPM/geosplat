@@ -84,7 +84,7 @@ output/
 ├── splat.ply                  # Gaussian splat (3DGS format) → SuperSplat / any 3DGS viewer
 ├── viewer.html                # interactive viewer (splats / point cloud, RGB / classes): open in a browser
 ├── points_sparse.ply          # SfM tie points (colored)
-├── points_dense.ply           # dense colored points (centers of solid Gaussians)
+├── points_dense.ply           # dense points: centers of solid Gaussians near SfM points, colored from the photos
 ├── geo.json                   # georeference: CRS, origin, scene→CRS transform, GPS fit RMSE
 ├── ortho_targets/             # with targets_orto: full-resolution orthophoto of that flight (+ dsm.tif)
 ├── targets/                     # with GCPs and positions:
@@ -170,6 +170,7 @@ Individual settings, for fine control (each one overrides the preset):
 | `TrainConfig(max_resolution=1000)` / `--max-resolution 1000` | Train on smaller images |
 | `TrainConfig(max_gaussians=300_000)` / `--max-gaussians 300000` | Cap the model size (MCMC): bounded memory and time per step |
 | `TrainConfig(sh_degree=1)` / `--sh-degree 1` | Less view-dependent color; fewer parameters |
+| `TrainConfig(flatten_weight=100)` / `--flatten 100` | Flat Gaussians lying on the surfaces: crisper wall edges in the orthophoto and ~10 % more dense points, with the same rendering quality (off by default) |
 | `TrainConfig(early_stop=True)` / `--early-stop` | Stop once held-out PSNR plateaus (checked after densification) |
 | `GeoConfig(gsd=0.05)` / `--gsd 0.05` | Coarser orthophoto (fewer pixels) |
 | `GeoConfig(ortho_max_angle=35)` / `--ortho-max-angle 35` | Orthophotos use a photo for a ground spot only within this angle from vertical; spots seen only more obliquely stay empty |
@@ -307,6 +308,10 @@ a nadir flight, far background), expect blur and floaters. For a drone survey, a
 Open `points_sparse.ply` / `points_dense.ply` in [CloudCompare](https://www.danielgm.net/cc/), MeshLab or Blender.
 Georeferenced clouds use CRS coordinates; CloudCompare will offer to shift them on import, so accept.
 
+`points_dense.ply` holds the centers of the solid Gaussians (opacity above `--dense-min-opacity`), keeping only
+those with an SfM point within about 1 m (floaters in empty air are dropped). Each point is colored from the photo
+that sees it sharpest and most directly, with the same visibility test as the orthophoto.
+
 ### Orthophoto and DSM
 
 For GPS imagery two orthophotos are produced:
@@ -317,11 +322,32 @@ For GPS imagery two orthophotos are produced:
 2. **`ortho/orthophoto.tif`**, after splat training. It uses the dense surface of the splat and occlusion-aware view
    selection: a true orthophoto, together with `ortho/dsm.tif`.
 
-Each ground pixel comes from the photos with the finest ground resolution there (focal length × cos(view angle) /
-distance), so close nadir photos are preferred over oblique, horizon or video views. The photos are projected on the
-splat depth where SfM points support it (within 1 m) or where it lies within 1 m of the SfM-point surface, and on
-the SfM-point surface elsewhere. Spots seen only by oblique (> 35° from vertical) or coarse photos stay empty
-(transparent) rather than filled with a poor image; see `--ortho-max-angle` and `--ortho-min-resolution`.
+How each ground pixel is filled (true orthophoto):
+
+- **Surface:** the splat depth where SfM points support it (within 1 m) or where it lies within 1 m of the SfM-point
+  surface, and the SfM-point surface elsewhere.
+- **Visibility:** a photo is used for a spot only if nothing is in the way, both in depth maps rendered from the splat
+  and in a z-buffer of the orthophoto surface itself projected into the photo (views looking past a wall are
+  rejected).
+- **Photos:** all photos by default; `--ortho-photos FOLDER ...` (`geo.ortho_photos`) restricts the fast and true
+  orthophotos to some folders, e.g. the flights of one date. Photos of another season paint warped vegetation onto
+  the surface, so mix dates only if the scene did not change.
+- **Photo sharpness:** every photo's sharpness is measured (Laplacian at reduced size) and multiplies its
+  resolution in the ranking (relative to the sharpest 10 % of the photos), so motion-blurred or hazy photos lose
+  against sharp ones even when they are closer. The dense point cloud colors use the same factor.
+- **Local sharpness:** blur varies within a frame (motion, focus, vibration), so the ranking also uses the sharpness
+  of each photo *around the spot* (mean Laplacian over a 31 px window, relative to the photo's median). Even a
+  blurry photo is used where it is locally the sharpest view, and sharp parts of other photos win elsewhere.
+- **Best view:** among the visible photos, the one with the finest **effective** resolution wins (with a narrow
+  blend near seams, wider on coarse splats where few surface cells are supported by SfM points): its pixel footprint on the ground (focal length × cos(view angle) / distance) combined with the
+  shift that the surface uncertainty causes at that angle, `σ · tan(angle)`. σ is 20 cm where SfM points support the
+  surface, 1 m where it is interpolated, plus the local height relief, so next to walls and roof edges only the most
+  vertical views are used. Oblique, horizon and video views are only used where they really add detail.
+- **Resolution:** the original photos are used at full resolution (undistorted once, cached in `colmap/fullres/`),
+  which keeps stretched surfaces such as wall faces sharp. `--no-ortho-fullres` (the `very_fast` preset) uses the
+  SfM-size photos instead.
+- **Blank instead of bad:** spots seen only by photos more than 35° from vertical, or coarser than twice the
+  orthophoto pixel, stay empty (transparent); see `--ortho-max-angle` and `--ortho-min-resolution`.
 
 Open `fast_orto/fast_orto.tif`, `ortho/orthophoto.tif` and `ortho/dsm.tif` in QGIS (drag and drop; the CRS is embedded). For the DSM, use
 **Layer Properties ▸ Symbology ▸ Singleband pseudocolor**, or **Raster ▸ Analysis ▸ Hillshade**. Overlay your GCPs

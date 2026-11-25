@@ -55,6 +55,13 @@ class GeoConfig:
             (``ortho_targets/``), e.g. a nadir flight flown for the targets. Its
             GCP files are the only ones used. ``None``: all photos and all GCP
             files. fast_orto and the final orthophoto always use all photos.
+        ortho_photos: Folders (absolute, or relative to the dataset folder) whose
+            photos build the fast and the true orthophoto, e.g. only the flights of
+            one date: photos of another season paint warped vegetation onto the
+            surface. ``None``: all photos. Point clouds and the splat still use all.
+        ortho_fullres: Build the true orthophoto from the original photos at full
+            resolution (sharper walls and slopes; undistorted once and cached, a
+            couple of minutes the first time). ``False`` uses the SfM-size photos.
         ortho_max_angle: Orthophotos use a photo for a ground spot only if it
             looks at it within this angle from vertical (degrees). Spots seen
             only more obliquely stay empty.
@@ -80,6 +87,8 @@ class GeoConfig:
     positions_crs: str | None = None
     gpx_time_offset: float | None = None
     targets_orto: str | Path | None = None
+    ortho_photos: list[str] | None = None
+    ortho_fullres: bool = True
     ortho_max_angle: float = 35.0
     ortho_min_resolution: float = 0.5
     located_targets: str | Path | None = None

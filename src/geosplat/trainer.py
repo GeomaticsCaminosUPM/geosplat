@@ -76,6 +76,11 @@ class TrainConfig:
             gradients, Adam state and rasterization buffers) for the auto budget.
         mcmc_opacity_reg: Opacity regularization weight used with ``max_gaussians``.
         mcmc_scale_reg: Scale regularization weight used with ``max_gaussians``.
+        flatten_weight: Weight of a loss on the smallest scale of each Gaussian
+            (relative to the scene radius) that makes Gaussians flat discs lying
+            on the surfaces: thinner walls, a sharper surface for the
+            orthophoto and point cloud, at a small cost in rendering quality.
+            ``0`` disables it.
         selective_adam: Use gsplat's fused CUDA SelectiveAdam, which only updates
             Gaussians visible in the current view (gsplat backend only).
         progressive_resolution: Coarse-to-fine training: the first steps use
@@ -125,6 +130,7 @@ class TrainConfig:
     bytes_per_gaussian: int = 4000
     mcmc_opacity_reg: float = 0.01
     mcmc_scale_reg: float = 0.01
+    flatten_weight: float = 0.0
     selective_adam: bool = True
     progressive_resolution: bool = True
     progressive_steps: tuple[float, float] = (0.1, 0.25)
@@ -515,6 +521,9 @@ class Trainer:
             if self.mcmc:
                 loss = loss + cfg.mcmc_opacity_reg * torch.sigmoid(self.params["opacities"]).mean()
                 loss = loss + cfg.mcmc_scale_reg * torch.exp(self.params["scales"]).mean()
+            if cfg.flatten_weight > 0:
+                thin = torch.exp(self.params["scales"]).min(dim=1).values
+                loss = loss + cfg.flatten_weight * thin.mean() / self.scene.scene_scale
             loss.backward()
 
             if self.selective:

@@ -296,11 +296,25 @@ def images_to_splat(
         from .sources import resolve_subfolder
 
         targets_dir = resolve_subfolder(originals, geo_config.targets_orto)
+    ortho_scene = scene
+    if geo_config.ortho_photos and originals is not None:
+        from dataclasses import replace
+
+        from .sources import cameras_in, resolve_subfolder
+
+        cams = []
+        for folder in geo_config.ortho_photos:
+            cams += cameras_in(scene, Path(colmap_dir).parent, resolve_subfolder(originals, folder))
+        if cams:
+            ortho_scene = replace(scene, cameras=sorted({c.name: c for c in cams}.values(), key=lambda c: c.name))
+            logger.info("Orthophotos from %d of %d photos (ortho_photos)", len(ortho_scene.cameras), len(scene.cameras))
+        else:
+            logger.warning("No registered photo in ortho_photos %s; using all photos.", geo_config.ortho_photos)
     if geo_config.fast_orto:
         from .ortho import make_fast_orthophoto
 
         t = time.time()
-        fast = make_fast_orthophoto(scene, ortho_frame, output_dir / "fast_orto", geo_config.gsd, gcps,
+        fast = make_fast_orthophoto(ortho_scene, ortho_frame, output_dir / "fast_orto", geo_config.gsd, gcps,
                                     max_view_angle=geo_config.ortho_max_angle,
                                     min_resolution=geo_config.ortho_min_resolution)
         outputs.update({k: v for k, v in fast.items() if isinstance(v, Path)})
@@ -318,12 +332,12 @@ def images_to_splat(
     outputs["splat"] = train.ply_path
     from .viewer import save_viewer
 
-    from .pointcloud import dense_points_from_splat, processed_region
+    from .pointcloud import dense_point_cloud, processed_region
 
-    outputs.update(export_point_clouds(train.params, scene, output_dir, geo, geo_config.dense_min_opacity))
-    outputs["viewer"] = save_viewer(train.params, output_dir / "viewer.html", train.train_cameras,
-                                    points=dense_points_from_splat(train.params, scene, geo_config.dense_min_opacity,
-                                                                   return_index=True),
+    dense = dense_point_cloud(train.params, scene, geo_config.dense_min_opacity, geo, train.sh_degree,
+                              photo_colors=train.backend == "gsplat")
+    outputs.update(export_point_clouds(train.params, scene, output_dir, geo, geo_config.dense_min_opacity, dense))
+    outputs["viewer"] = save_viewer(train.params, output_dir / "viewer.html", train.train_cameras, points=dense,
                                     region=processed_region(train.params, scene),
                                     m_per_unit=geo.scale if geo is not None else None)
     timings["point_clouds"] = time.time() - t
@@ -349,8 +363,9 @@ def images_to_splat(
 
             t = time.time()
             ortho = make_orthophoto(
-                train.params, scene, ortho_frame, output_dir / "ortho", train.sh_degree, geo_config.gsd, gcps,
+                train.params, ortho_scene, ortho_frame, output_dir / "ortho", train.sh_degree, geo_config.gsd, gcps,
                 max_view_angle=geo_config.ortho_max_angle, min_resolution=geo_config.ortho_min_resolution,
+                work_dir=Path(colmap_dir).parent if originals is not None and geo_config.ortho_fullres else None,
             )
             outputs.update({k: v for k, v in ortho.items() if isinstance(v, Path)})
             if "gcp_dz" in ortho:
